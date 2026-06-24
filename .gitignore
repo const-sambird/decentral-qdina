@@ -1,0 +1,12 @@
+zzz_existing_code/
+/tpc-h/
+/tpc-ds/
+.venv/
+__pycache__/
+.DS_Store/
+replicas.csv
+results/
+wandb/
+wandb.env
+workload/
+tpcc-workload/

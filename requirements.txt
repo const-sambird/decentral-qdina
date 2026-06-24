@@ -1,0 +1,16 @@
+psycopg[binary]
+torch
+numpy
+matplotlib
+gymnasium
+qiskit==1.4.2
+qiskit[visualization]
+qiskit-machine-learning
+qiskit-machine-learning[torch]
+qiskit-algorithms
+qiskit-aer
+
+psycopg2-binary
+mock
+
+wandb
