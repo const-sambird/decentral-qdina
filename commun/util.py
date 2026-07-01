@@ -1,6 +1,7 @@
 from itertools import chain, combinations
 from random import randrange
 import re
+import os
 
 def powerset(iterable, max_len):
     # https://docs.python.org/2/library/itertools.html#recipes
@@ -110,3 +111,31 @@ def add_alias_subquery(query_text):
     for pos in sorted(positions, reverse=True):
         query_text = query_text[:pos] + " as alias123 " + query_text[pos:]
     return query_text
+
+
+def parse_replicas_csv(file_path: str) -> dict:
+    '''
+    Parses the replicas.csv file to load cluster topology configuration.
+    Each valid line format: id,hostname,port,dbname,user,password
+    '''
+    replicas_config = {}
+    if not os.path.exists(file_path):
+        return replicas_config
+        
+    with open(file_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            # Skip headers or empty lines
+            if not line or line.startswith('id'):
+                continue
+            parts = line.split(',')
+            if len(parts) >= 6:
+                r_id = int(parts[0])
+                replicas_config[r_id] = {
+                    'hostname': parts[1],
+                    'port': int(parts[2]),
+                    'dbname': parts[3],
+                    'user': parts[4],
+                    'password': parts[5]
+                }
+    return replicas_config
