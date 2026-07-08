@@ -99,7 +99,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         with open("local_test_metrics.csv", "a") as f:
                             f.write(f"{self.global_epoch},{local_step},{mkspan},{jain},{reward}\n")
                         
-                        self.epsilon = max(0.05, self.epsilon * 0.997)
+                        self.epsilon = max(0.4, self.epsilon * 0.997)
 
                         self.collected_metrics.clear() 
                         self.global_step_counter += 1  
