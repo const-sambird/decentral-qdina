@@ -14,3 +14,7 @@ psycopg2-binary
 mock
 
 wandb
+
+scipy
+grpcio 
+grpcio-tools

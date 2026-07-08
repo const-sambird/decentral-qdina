@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package qdina;
+
+// Service definition for network coordination
+service QDinaService {
+    // Worker node registers with the master router at startup
+    rpc RegisterWorker (WorkerRegistration) returns (RegistrationResponse);
+    
+    // Worker sends its local metrics and awaits the next workload slice
+    rpc SubmitMetricsAndGetWorkload (LocalMetrics) returns (WorkloadSlice);
+}
+
+message WorkerRegistration {
+    int32 replica_id = 1;
+    string hostname = 2;
+    int32 port = 3;
+}
+
+message RegistrationResponse {
+    bool status = 1;
+    string message = 2;
+}
+
+message LocalMetrics {
+    int32 replica_id = 1;
+    double total_cost = 2;         // y_t_local sent to the central router
+    repeated double costs = 3;     // Individual query template costs
+    double storage_used = 4;       // Simulated index storage overhead
+}
+
+message WorkloadSlice {
+    bool stop_training = 1;        // Signal to stop the current episode
+    repeated string queries = 2;   // The specific slice of SQL queries to evaluate
+}

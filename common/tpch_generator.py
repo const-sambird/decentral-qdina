@@ -4,7 +4,7 @@ import random
 import shutil
 import subprocess
 
-from commun.generator import WorkloadGenerator
+from common.generator import WorkloadGenerator
 
 class TPCHGenerator(WorkloadGenerator):
     def __init__(self, template_path: str, queries_per_template: int | list[int], workload_path: str, scale_factor: int):

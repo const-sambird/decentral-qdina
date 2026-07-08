@@ -10,3 +10,8 @@ wandb/
 wandb.env
 workload/
 tpcc-workload/
+venv/
+workload_output/
+tpc-h
+*.csv
+script.sh

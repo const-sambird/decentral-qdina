@@ -8,8 +8,9 @@ from qiskit_machine_learning.connectors import TorchConnector
 import torch
 from torch import nn
 import torch.nn.functional as F
+import math
 
-from encoding import AngleStateEncoder, BasisEncoder, AmplitudeEncoder
+from agent.encoding import AngleStateEncoder, BasisEncoder, AmplitudeEncoder
 
 def crx(param_name: str = 'crx_gate') -> Gate:
     '''
@@ -262,3 +263,21 @@ class QuantumDQN(nn.Module):
         x = self.output_layer(x)
 
         return x
+
+
+class AngleEncoder(nn.Module):
+    '''
+    Transforms an encoded state tensor into a tensor usable for encoding angles in qubits.
+
+    FIX ML: Suitable for continuous integer workloads.
+
+    Associates a value x with an angle in [0, π] by normalizing with respect to a pseudo-maximal workload.
+    '''
+    def __init__(self, pseudo_max_queries=350.0):
+        super(AngleEncoder, self).__init__()
+        self.pseudo_max = pseudo_max_queries
+    
+    def forward(self, x):
+        # Normalize the input tensor to [0, 1] based on the pseudo-max value
+        norm_x = torch.clamp(x / self.pseudo_max, 0.0, 1.0)
+        return norm_x * math.pi

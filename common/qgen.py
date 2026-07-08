@@ -6,11 +6,13 @@ BENCH_TYPE = 'tpc-h'
 # BENCH_TYPE = 'tpc-ds'
 OUTPUT_TO = 'train'
 # OUTPUT_TO = 'test'
-NUM_INSTANCES = 10
+NUM_INSTANCES = 50
+
+BASE_PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 if BENCH_TYPE == 'tpc-h':
-    ROOTDIR = f'/proj/qdina-PG0/dina-set/h/{OUTPUT_TO}'
-    DBGEN_DIR = '/users/sambird/tpc-h/dbgen'
+    ROOTDIR = os.path.join(BASE_PROJECT_DIR, 'workload_output')
+    DBGEN_DIR = os.path.join(BASE_PROJECT_DIR, 'tpc-h/dbgen')
     NUM_TEMPLATES = 22
     SCALE_FACTOR = '10'
 elif BENCH_TYPE == 'tpc-ds':

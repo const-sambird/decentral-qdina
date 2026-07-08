@@ -1,5 +1,5 @@
 import torch
-from commun.qiskit_spsa import SPSA
+from common.qiskit_spsa import SPSA
 import numpy as np
 
 class SPSAOptimiser:

@@ -1,7 +1,7 @@
 import psycopg
 
 class Replica:
-    def __init__(self, id, hostname, port = 5432, dbname = 'tpchdb', user = 'sam', password = ''):
+    def __init__(self, id, hostname, port, dbname, user, password):
         self.id = id
         self.hostname = hostname
         self.port = port
@@ -14,8 +14,11 @@ class Replica:
         return f'host={self.hostname} port={self.port} dbname={self.dbname} user={self.user} password={self.password}'
     
     def drop_all_indexes(self, tables, mode: str):
+        if not tables:
+            return
         try:
-            with self.conn.cursor() as cur:
+            conn = self.connection()
+            with conn.cursor() as cur:
                 for table in tables:
                     if mode == 'cost':
                         cur.execute('SELECT hypopg_reset();')
