@@ -27,14 +27,10 @@ if [ "$1" == "--node" ] && [ "$2" == "router" ]; then
     tmux send-keys -t qdina "time python3 -m router.main_router --mode drift --episodes 100 --config replicas-cloudlab.csv --workload-dir ./workload_output" C-m
 
 elif [ "$1" == "--node" ] && [ "$2" -ge 1 ] && [ "$2" -le 6 ] 2>/dev/null; then
-    if [ "$3" == "--router" ] && [ -n "$4" ]; then
-        ROUTER_IP="$4"
-        echo "Starting Agent Node $2 connecting to Router at ${ROUTER_IP}:50051..."
-        echo "python3 -m agent.main_agent --id $2 --mode quantum --server ${ROUTER_IP}:50051 --config replicas-cloudlab.csv --workload-dir ./workload_output"
-        tmux send-keys -t qdina "python3 -m agent.main_agent --id $2 --mode quantum --server ${ROUTER_IP}:50051 --config replicas-cloudlab.csv --workload-dir ./workload_output" C-m
-    else
-        echo "Error: Missing router IP address for the worker agent."
-        exit 1
+    ROUTER_IP="10.10.1.1"
+    echo "Starting Agent Node $2 connecting to Router at ${ROUTER_IP}:50051..."
+    echo "python3 -m agent.main_agent --id $2 --mode quantum --server ${ROUTER_IP}:50051 --config replicas-cloudlab.csv"
+    tmux send-keys -t qdina "python3 -m agent.main_agent --id $2 --mode quantum --server ${ROUTER_IP}:50051 --config replicas-cloudlab.csv" C-m
     fi
 else
     echo "Usage for Router : ./start.sh --node router"

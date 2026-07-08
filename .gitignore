@@ -11,7 +11,6 @@ wandb.env
 workload/
 tpcc-workload/
 venv/
-workload_output/
 tpc-h
 config.csv
 local_test_metrics.csv
