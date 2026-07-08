@@ -13,5 +13,7 @@ tpcc-workload/
 venv/
 workload_output/
 tpc-h
-*.csv
+config.csv
+local_test_metrics.csv
+routes.csv
 script.sh
