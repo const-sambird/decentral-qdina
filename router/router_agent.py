@@ -20,12 +20,11 @@ class RouterAgent:
         '''
         self.n_actions = n_actions
         self.gamma = gamma
-        
-        input_size = n_templates * n_replicas
         self.n_replicas = n_replicas
         self.n_templates = n_templates
+        
+        input_size = (n_templates * n_replicas) + n_templates
 
-        # Pass input_size instead of n_templates
         self.policy_net = DQN(input_size, n_actions, layer_features)
         self.target_net = DQN(input_size, n_actions, layer_features)
         
@@ -34,6 +33,17 @@ class RouterAgent:
         
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.loss_fn = nn.MSELoss()
+
+    def _prepare_state_tensor(self, state_batch, batch_size, device):
+        """
+        Prepares the state tensor for input into the DQN.
+        """
+        routes_b = state_batch[:, :self.n_templates].to(torch.long).to(device)
+
+        costs_b = state_batch[:, self.n_templates:].to(torch.float32).to(device)
+
+        routes_one_hot = F.one_hot(routes_b, num_classes=self.n_replicas).view(batch_size, -1).float()
+        return torch.cat([routes_one_hot, costs_b], dim=1)
         
     def select_action(self, state, epsilon: float):
         '''
@@ -46,52 +56,35 @@ class RouterAgent:
             return random.randint(0, self.n_actions - 1)
         
         with torch.no_grad():
-            # Create tensor with 'long' type (64-bit integer)
-            state_tensor = torch.tensor(state, dtype=torch.long)
-            
-            # Apply One-Hot Encoding
-            one_hot_state = F.one_hot(state_tensor, num_classes=self.n_replicas)
-            
-            # Flatten and convert back to Float for the network
-            one_hot_flat = one_hot_state.view(1, -1).float()
-            
-            # Move to target device dynamically
+            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
             device = next(self.policy_net.parameters()).device
-            one_hot_flat = one_hot_flat.to(device)
+            nn_input = self._prepare_state_tensor(state_tensor, 1, device)
             
-            q_values = self.policy_net(one_hot_flat)
+            q_values = self.policy_net(nn_input)
             return q_values.argmax().item()
 
     def learn(self, memory, batch_size):
-        '''
-        Optimizes the central router DQN policy net using standard Bellman Equation.
-        '''
         if len(memory) < batch_size:
             return
 
         # Sample transitions from the replay buffer
         transitions = memory.sample(batch_size)
         
-        states = [t.state for t in transitions]
-        actions = [t.action for t in transitions]
-        next_states = [t.next_state for t in transitions]
-        rewards = [t.reward for t in transitions]
+        states = np.array([t.state for t in transitions])
+        actions = np.array([t.action for t in transitions])
+        next_states = np.array([t.next_state for t in transitions])
+        rewards = np.array([t.reward for t in transitions])
 
-        # Determine target device (CPU/GPU)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Conversion to LONG type (required for one-hot encoding)
-        state_b = torch.tensor(np.array(states), dtype=torch.long, device=device)
-        next_state_b = torch.tensor(np.array(next_states), dtype=torch.long, device=device)
+        state_b_raw = torch.tensor(states, dtype=torch.float32)
+        next_state_b_raw = torch.tensor(next_states, dtype=torch.float32)
         action_b = torch.tensor(actions, dtype=torch.long, device=device).unsqueeze(1)
         reward_b = torch.tensor(rewards, dtype=torch.float32, device=device).unsqueeze(1)
 
-        # Apply One-Hot Encoding and Flatten
-        # Shape changes from [Batch, 22] -> [Batch, 22, 3] -> [Batch, 66]
-        state_b = F.one_hot(state_b, num_classes=self.n_replicas).view(batch_size, -1).float()
-        next_state_b = F.one_hot(next_state_b, num_classes=self.n_replicas).view(batch_size, -1).float()
+        state_b = self._prepare_state_tensor(state_b_raw, batch_size, device)
+        next_state_b = self._prepare_state_tensor(next_state_b_raw, batch_size, device)
 
-        # Calculate current Q values: Q(s_t, a_t)
         current_q_values = self.policy_net(state_b).gather(1, action_b)
 
         # Calculate maximum future Q value: max_a Q_target(s_{t+1}, a)

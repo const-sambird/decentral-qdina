@@ -180,9 +180,30 @@ class QDinaNetworkClient:
         
         self.candidates = [
             ('lineitem', ['l_orderkey']),
+            ('lineitem', ['l_partkey']),
             ('lineitem', ['l_suppkey']),
+            ('lineitem', ['l_shipdate']),
+            ('lineitem', ['l_commitdate']),
+            ('lineitem', ['l_receiptdate']),
+            ('lineitem', ['l_returnflag']),
+            
             ('orders', ['o_custkey']),
-            ('customer', ['c_nationkey'])
+            ('orders', ['o_orderdate']),
+            ('orders', ['o_orderkey']),
+            
+            ('customer', ['c_nationkey']),
+            ('customer', ['c_mktsegment']),
+            ('supplier', ['s_nationkey']),
+            ('supplier', ['s_suppkey']),
+            
+            ('part', ['p_partkey']),
+            ('part', ['p_type']),
+            ('part', ['p_size']),
+            ('partsupp', ['ps_partkey']),
+            ('partsupp', ['ps_suppkey']),
+            
+            ('lineitem', ['l_partkey', 'l_suppkey']),
+            ('orders', ['o_custkey', 'o_orderdate'])
         ]
         self.templates_map = list(range(self.n_templates))
         
@@ -252,7 +273,7 @@ class QDinaNetworkClient:
                 print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Storage: {current_storage_usage:.1f}MB | Epsilon: {self.epsilon:.2f}")
 
                 if not response.stop_training:
-                    self.epsilon = max(0.15, self.epsilon * 0.995)
+                    self.epsilon = max(0.3, self.epsilon * 0.999)
 
             except grpc.RpcError as e:
                 print(f"[Worker Client {self.replica_id}] Connection lost with master router. Retrying in 5 seconds... ({e.code()})")

@@ -273,7 +273,7 @@ class AngleEncoder(nn.Module):
 
     Associates a value x with an angle in [0, π] by normalizing with respect to a pseudo-maximal workload.
     '''
-    def __init__(self, pseudo_max_queries=350.0):
+    def __init__(self, pseudo_max_queries=1000.0):
         super(AngleEncoder, self).__init__()
         self.pseudo_max = pseudo_max_queries
     

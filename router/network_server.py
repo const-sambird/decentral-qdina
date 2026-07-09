@@ -73,25 +73,34 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     
                     if len(self.collected_metrics) == self.env.n_replicas:
                         
-                        costs_matrix = [self.collected_metrics[w_id]['total_cost'] for w_id in sorted(self.collected_metrics.keys())]
-                        costs_array = np.array(costs_matrix, dtype=np.float32)
+                        sorted_workers = sorted(self.collected_metrics.keys())
+                        
+                        costs_matrix = [self.collected_metrics[w_id]['total_cost'] for w_id in sorted_workers]
+                        costs_array = np.array(costs_matrix, dtype=np.float64)
                         mkspan = float(np.max(costs_array))
                         
-                        state = self.routing_table_state
+                        all_template_costs = [self.collected_metrics[w_id]['costs'] for w_id in sorted_workers]
+                        template_costs_array = np.sum(all_template_costs, axis=0)
+                        
+                        state = self.env._get_obs()
                         action = self.agent.select_action(state, self.epsilon)
                         
-                        next_state, reward, terminated, truncated, info = self.env.step(action, external_costs=costs_array)
+                        next_state, reward, terminated, truncated, info = self.env.step(
+                            action, 
+                            external_costs=costs_array, 
+                            external_template_costs=template_costs_array
+                        )
                         
-                        jain = info.get('jain_index', info.get('jain_fairness', 1.0))
-                        jain = float(jain) if isinstance(jain, (np.ndarray, np.generic)) else jain
+                        jain = info.get('jain_index', 1.0)
                         
                         self.router_memory.push(state, action, next_state, reward, False)
                         if len(self.router_memory) > self.batch_size:
                             self.agent.learn(self.router_memory, batch_size=self.batch_size)
                             
-
-                        self.routing_table_state = np.copy(next_state)
-                        
+                        self.routing_table_state = np.copy(next_state[:self.env.n_templates])
+                        table_str = " ".join(str(int(node)) for node in self.routing_table_state)
+                        print(f"[Router State] Table : [{table_str}]")
+                                                
                         print(f"[Router Learn] Step {local_step:2d} | Makespan: {mkspan:14.2f} | Jain Index: {jain:.4f} | Reward: {reward:15.2f} | Epsilon: {self.epsilon:.3f}")
 
                         self.next_workload_slices = {w_id: self._get_routed_slice_for_node(w_id) for w_id in self.registered_workers.keys()}
@@ -99,7 +108,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         with open("local_test_metrics.csv", "a") as f:
                             f.write(f"{self.global_epoch},{local_step},{mkspan},{jain},{reward}\n")
                         
-                        self.epsilon = max(0.4, self.epsilon * 0.997)
+                        self.epsilon = max(0.4, self.epsilon * 0.999)
 
                         self.collected_metrics.clear() 
                         self.global_step_counter += 1  

@@ -15,18 +15,13 @@ class GlobalRoutingEnv(gym.Env):
         self.n_templates = n_templates
         self.n_replicas = n_replicas
         
-        # State Space (S): Routing table mapping each template to a replica ID (0 to n_replicas-1)
-        # Bounded discretely to satisfy the Markov property without continuous complexity
-        self.observation_space = gym.spaces.MultiDiscrete([self.n_replicas] * self.n_templates)
+        self.observation_space = gym.spaces.Box(low=0, high=np.inf, shape=(self.n_templates * 2,))
         
-        # Action Space (A): Size = (|QT| * (n - 1)) + 1
-        # Action 0: "Do Nothing" (stabilize the cluster)
-        # Actions 1 to (|QT| * (n - 1)): Reroute template j to a different replica
         self.n_actions = (self.n_templates * (self.n_replicas - 1)) + 1
         self.action_space = gym.spaces.Discrete(self.n_actions)
         
-        # Internal state allocation: [replica_for_Q0, replica_for_Q1, ..., replica_for_Q21]
-        self._state = np.zeros(self.n_templates, dtype=np.int32)
+        self._state_routes = np.zeros(self.n_templates, dtype=np.int32)
+        self._state_costs = np.zeros(self.n_templates, dtype=np.float64)
         
     def _decode_action(self, action: int):
         '''
@@ -40,62 +35,54 @@ class GlobalRoutingEnv(gym.Env):
         adj_action = action - 1
         template_idx = adj_action // (self.n_replicas - 1)
         replica_shift = adj_action % (self.n_replicas - 1)
-        
-        # Determine target node while skipping the current node assignment
-        current_replica = self._state[template_idx]
+        current_replica = self._state_routes[template_idx]
         target_replica = replica_shift if replica_shift < current_replica else replica_shift + 1
-        
         return template_idx, target_replica
+
+    def _get_obs(self):
+        return np.concatenate([self._state_routes, self._state_costs])
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        
-        # Initial state setup: can be initialized via a best-fit heuristic or uniformly
         if options and 'initial_routing' in options:
-            self._state = np.array(options['initial_routing'], dtype=np.int32)
+            self._state_routes = np.array(options['initial_routing'], dtype=np.int32)
         else:
-            self._state = np.random.randint(0, self.n_replicas, size=self.n_templates, dtype=np.int32)
-            
-        return self._state, {}
+            self._state_routes = np.random.randint(0, self.n_replicas, size=self.n_templates, dtype=np.int32)
+        
+        self._state_costs = np.zeros(self.n_templates, dtype=np.float64)
+        return self._get_obs(), {}
 
-    def step(self, action: int, external_costs=None):
+    def step(self, action: int, external_costs=None, external_template_costs=None):
         """
         Execute one global routing configuration change step.
         """
         instruction = self._decode_action(action)
         if instruction is not None:
             template_idx, target_replica = instruction
-            self._state[template_idx] = target_replica
+            self._state_routes[template_idx] = target_replica
 
-        # If external costs are provided by the gRPC server, use them
+        if external_template_costs is not None:
+            self._state_costs = np.log10(np.array(external_template_costs, dtype=np.float64) + 1.0)
+
         if external_costs is not None:
-            costs = external_costs
+            costs = np.array(external_costs, dtype=np.float64)
         else:
-            # Fallback or default calculation if absent
-            costs = np.zeros(self.n_replicas, dtype=np.float32)
+            costs = np.zeros(self.n_replicas, dtype=np.float64)
 
-        # Calculate Jain Index and Makespan
-        makespan = float(np.max(costs))
-        
+        makespan_raw = float(np.max(costs))
         sum_costs = np.sum(costs)
         sum_sq_costs = np.sum(costs ** 2)
-        
+
         if sum_sq_costs > 0:
             jain_index = (sum_costs ** 2) / (self.n_replicas * sum_sq_costs)
         else:
             jain_index = 1.0
-            
-        reward = -makespan * (2.0 - jain_index)
+
+        makespan_scaled = np.log10(makespan_raw + 1.0)
+        reward = -makespan_scaled + (jain_index * 2.0)
         
         if np.any(costs == 0.0) and np.sum(costs) > 0:
-            reward -= 5_000_000_000.0  # Fixed penalty
+            reward -= 5.0 
             
-        terminated = False
-        truncated = False
-        info = {
-            'makespan': makespan,
-            'jain_index': jain_index
-        }
-        
-        # Returns standard Gymnasium format
-        return self._state, reward, terminated, truncated, info
+        info = {'makespan': makespan_raw, 'jain_index': jain_index}
+        return self._get_obs(), reward, False, False, info
