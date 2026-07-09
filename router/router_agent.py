@@ -23,7 +23,7 @@ class RouterAgent:
         self.n_replicas = n_replicas
         self.n_templates = n_templates
         
-        input_size = n_templates * 2 
+        input_size = (self.n_templates * self.n_replicas) + self.n_templates
 
         self.policy_net = DQN(input_size, n_actions, layer_features)
         self.target_net = DQN(input_size, n_actions, layer_features)
