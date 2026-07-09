@@ -81,8 +81,14 @@ if __name__ == '__main__':
         print("[Master Orchestrator] gRPC Server active and listening on port 50051...")
         
         print(f"[Master Orchestrator] Waiting for all {num_replicas} database replicas to register...")
-        while len(servicer.registered_workers) < num_replicas:
-            print(f"[Master Orchestrator] Registered {len(servicer.registered_workers)}/{num_replicas} replicas...")
+        while True:
+            with servicer.lock:
+                registered_count = len(servicer.registered_workers)
+            
+            if registered_count >= num_replicas:
+                break
+                
+            print(f"[Master Orchestrator] Registered {registered_count}/{num_replicas} replicas...")
             time.sleep(1.0)
         print("[Master Orchestrator] All replicas connected! Launching training episodes...")
         
