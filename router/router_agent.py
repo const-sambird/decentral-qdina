@@ -23,7 +23,7 @@ class RouterAgent:
         self.n_replicas = n_replicas
         self.n_templates = n_templates
         
-        input_size = (n_templates * n_replicas) + n_templates
+        input_size = n_templates * 2 
 
         self.policy_net = DQN(input_size, n_actions, layer_features)
         self.target_net = DQN(input_size, n_actions, layer_features)
@@ -38,12 +38,12 @@ class RouterAgent:
         """
         Prepares the state tensor for input into the DQN.
         """
-        routes_b = state_batch[:, :self.n_templates].to(torch.long).to(device)
-
-        costs_b = state_batch[:, self.n_templates:].to(torch.float32).to(device)
-
-        routes_one_hot = F.one_hot(routes_b, num_classes=self.n_replicas).view(batch_size, -1).float()
-        return torch.cat([routes_one_hot, costs_b], dim=1)
+        routes_raw = state_batch[:, :self.n_templates].to(torch.long)
+        costs_raw = state_batch[:, self.n_templates:].to(torch.float32)
+        
+        routes_one_hot = F.one_hot(routes_raw, num_classes=self.n_replicas).view(batch_size, -1).float()
+        
+        return torch.cat([routes_one_hot, costs_raw], dim=1)
         
     def select_action(self, state, epsilon: float):
         '''

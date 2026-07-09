@@ -80,16 +80,18 @@ if __name__ == '__main__':
         server.start()
         print("[Master Orchestrator] gRPC Server active and listening on port 50051...")
         
-        print(f"[Master Orchestrator] Waiting for all {num_replicas} database replicas to register...")
+        print(f"[Master Orchestrator] Waiting for all {num_replicas} database replicas...")
         while True:
             with servicer.lock:
-                registered_count = len(servicer.registered_workers)
+                current_count = len(servicer.registered_workers)
             
-            if registered_count >= num_replicas:
+            if current_count >= num_replicas:
+                print(f"[Master Orchestrator] All {num_replicas} replicas connected!")
                 break
                 
-            print(f"[Master Orchestrator] Registered {registered_count}/{num_replicas} replicas...")
-            time.sleep(1.0)
+            print(f"[Master Orchestrator] Registered {current_count}/{num_replicas} replicas... waiting...")
+            time.sleep(2.0)
+        servicer.ready_to_train = True
         print("[Master Orchestrator] All replicas connected! Launching training episodes...")
         
         steps_per_episode = 20

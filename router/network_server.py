@@ -44,6 +44,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.last_known_costs = [0.0] * n_replicas
         self.last_known_indexes = {}
         self.collected_metrics = {}
+        self.ready_to_train = False
 
     def RegisterWorker(self, request, context):
         with self.lock:
@@ -58,6 +59,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
     def SubmitMetricsAndGetWorkload(self, request, context):
         try:
+            if not self.ready_to_train:
+                return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
             worker_id = request.replica_id
             
             with self.lock:
