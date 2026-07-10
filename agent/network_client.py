@@ -17,6 +17,9 @@ from router.DQN import DQN
 from agent.qnn import QuantumDQN
 from common.spsa_opt import SPSAOptimiser
 from common.replay_memory import ReplayMemory
+from agent.database import Replica
+from common.preprocessor import Preprocessor 
+from common.profiling import Profiler
 
 class QDinaNetworkClient:
     def __init__(self, replica_id: int, server_address: str, agent_mode: str, 
@@ -80,7 +83,7 @@ class QDinaNetworkClient:
             self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-3)
             print(f"[Worker Client {self.replica_id}] Classical DQN Policy Network built successfully.")
         elif self.agent_mode == 'quantum':
-            self.policy_net = QuantumDQN(n_inputs=self.n_templates, n_qubits=5, n_actions=n_actions, qnn_type='twolocal')
+            self.policy_net = QuantumDQN(n_inputs=self.n_templates, n_qubits=5, n_actions=n_actions, qnn_type='twolocal', qnn_output='layer')
             self.optimizer = SPSAOptimiser(
                 self.policy_net, 
                 lr=0.1, 
@@ -178,33 +181,39 @@ class QDinaNetworkClient:
         current_storage_usage = 0.0
         costs_per_template = [0.0] * self.n_templates
         
-        self.candidates = [
-            ('lineitem', ['l_orderkey']),
-            ('lineitem', ['l_partkey']),
-            ('lineitem', ['l_suppkey']),
-            ('lineitem', ['l_shipdate']),
-            ('lineitem', ['l_commitdate']),
-            ('lineitem', ['l_receiptdate']),
-            ('lineitem', ['l_returnflag']),
+        # self.candidates = [
+        #     ('lineitem', ['l_orderkey']),
+        #     ('lineitem', ['l_partkey']),
+        #     ('lineitem', ['l_suppkey']),
+        #     ('lineitem', ['l_shipdate']),
+        #     ('lineitem', ['l_commitdate']),
+        #     ('lineitem', ['l_receiptdate']),
+        #     ('lineitem', ['l_returnflag']),
             
-            ('orders', ['o_custkey']),
-            ('orders', ['o_orderdate']),
-            ('orders', ['o_orderkey']),
+        #     ('orders', ['o_custkey']),
+        #     ('orders', ['o_orderdate']),
+        #     ('orders', ['o_orderkey']),
             
-            ('customer', ['c_nationkey']),
-            ('customer', ['c_mktsegment']),
-            ('supplier', ['s_nationkey']),
-            ('supplier', ['s_suppkey']),
+        #     ('customer', ['c_nationkey']),
+        #     ('customer', ['c_mktsegment']),
+        #     ('supplier', ['s_nationkey']),
+        #     ('supplier', ['s_suppkey']),
             
-            ('part', ['p_partkey']),
-            ('part', ['p_type']),
-            ('part', ['p_size']),
-            ('partsupp', ['ps_partkey']),
-            ('partsupp', ['ps_suppkey']),
+        #     ('part', ['p_partkey']),
+        #     ('part', ['p_type']),
+        #     ('part', ['p_size']),
+        #     ('partsupp', ['ps_partkey']),
+        #     ('partsupp', ['ps_suppkey']),
             
-            ('lineitem', ['l_partkey', 'l_suppkey']),
-            ('orders', ['o_custkey', 'o_orderdate'])
-        ]
+        #     ('lineitem', ['l_partkey', 'l_suppkey']),
+        #     ('orders', ['o_custkey', 'o_orderdate'])
+        # ]
+
+        from common.query_loader import load_training_set_queries
+        queries, templates = load_training_set_queries('./workload_output/', fraction=1.0)
+
+        self.candidates = self._generate_candidates(queries, templates)
+
         self.templates_map = list(range(self.n_templates))
         
         if self.env is None:
@@ -279,3 +288,30 @@ class QDinaNetworkClient:
             except grpc.RpcError as e:
                 print(f"[Worker Client {self.replica_id}] Connection lost with master router. Retrying in 5 seconds... ({e.code()})")
                 time.sleep(5.0)
+
+    def _generate_candidates(self, queries: list[str], templates: list[int]) -> list[tuple[str, tuple[str, ...]]]:
+        replica = Replica(
+            id=self.replica_id,
+            hostname=self.db_host,
+            port=self.db_port,
+            dbname=self.db_name,
+            user=self.db_user,
+            password=self.db_password
+        )
+
+        preprocessor = Preprocessor(
+            profiler=Profiler(),
+            database=replica,
+            max_index_width=2,
+            queries=queries,
+            templates=templates
+        )
+
+        preprocessor.preprocess(candidate_path=None, max_candidates=None)
+        
+        candidates_with_table = []
+        for cand in preprocessor.candidates:
+            table = preprocessor.cols_to_table[cand[0]]
+            candidates_with_table.append((table, cand))
+        
+        return candidates_with_table

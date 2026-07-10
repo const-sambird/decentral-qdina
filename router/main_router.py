@@ -93,11 +93,13 @@ if __name__ == '__main__':
             time.sleep(2.0)
         servicer.ready_to_train = True
         print("[Master Orchestrator] All replicas connected! Launching training episodes...")
+
+        print(f"[Master Orchestrator] Total queries in initial workload: {len(initial_queries)}")
         
         steps_per_episode = 20
         epsilon_start = 1.0
-        epsilon_min = 0.05
-        decay_rate = 0.95
+        epsilon_min = 0.20
+        decay_rate = 0.995
         
         for episode in range(args.episodes):
             print(f"\n--- [Master Orchestrator] Starting Global Episode {episode + 1}/{args.episodes} ---")
