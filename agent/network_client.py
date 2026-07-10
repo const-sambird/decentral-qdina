@@ -225,7 +225,8 @@ class QDinaNetworkClient:
                     replica_id=self.replica_id,
                     total_cost=current_cost_tracker,
                     costs=costs_per_template,
-                    storage_used=current_storage_usage
+                    storage_used=current_storage_usage,
+                    active_indexes=self.env.get_active_index_names()
                 )
                 response = self.stub.SubmitMetricsAndGetWorkload(metrics)
                 

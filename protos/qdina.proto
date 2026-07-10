@@ -27,6 +27,7 @@ message LocalMetrics {
     double total_cost = 2;         // y_t_local sent to the central router
     repeated double costs = 3;     // Individual query template costs
     double storage_used = 4;       // Simulated index storage overhead
+    repeated string active_indexes = 5;
 }
 
 message WorkloadSlice {

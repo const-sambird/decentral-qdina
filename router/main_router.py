@@ -135,8 +135,7 @@ if __name__ == '__main__':
             
             servicer.agent.target_net.load_state_dict(servicer.agent.policy_net.state_dict())
             
-        print("\n[Master Orchestrator] Extraction des résultats FINAUX pour le benchmark de Sam Bird...")
-        servicer.export_benchmark_files(output_dir=".")
+            servicer.export_benchmark_files(output_dir=".")
 
         print("\n[Master Orchestrator] Training completed successfully!")
         print("[Master Orchestrator] Finalizing outstanding gRPC requests (grace period)...")

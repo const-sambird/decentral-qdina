@@ -153,3 +153,15 @@ class LocalIndexingEnv(gym.Env):
     
     def _get_obs(self):
         return self._current_workload_state.copy()
+    
+    def get_active_index_names(self):
+        """
+        Returns the names of the currently active indexes based on the internal state.
+        """
+        active_indexes = []
+        for idx_pos, val in enumerate(self._current_indexes):
+            if val == 1:
+                table, columns = self.candidates[idx_pos]
+                index_name = f"{table}_{'_'.join(columns)}"
+                active_indexes.append(index_name)
+        return active_indexes

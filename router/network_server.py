@@ -3,6 +3,8 @@ import time
 import threading
 import numpy as np
 import torch
+import csv
+import os
 
 from protos import qdina_pb2
 from protos import qdina_pb2_grpc
@@ -46,6 +48,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.collected_metrics = {}
         self.ready_to_train = False
 
+        self.last_known_metrics = {}
+
     def RegisterWorker(self, request, context):
         with self.lock:
             worker_id = request.replica_id
@@ -69,7 +73,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 self.collected_metrics[worker_id] = {
                     'total_cost': request.total_cost,
                     'costs': list(request.costs),
-                    'storage_used': request.storage_used
+                    'storage_used': request.storage_used,
+                    'indexes': list(request.active_indexes)
                 }
                 
                 while self.global_step_counter == local_step and not self.stop_training_signal:
@@ -91,6 +96,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         
                         jain = info.get('jain_index', 1.0)
                         mkspan = float(np.max(costs_array))
+                        self.epsilon = max(0.4, self.epsilon * 0.999)
                         
                         self.router_memory.push(state, action, next_state, reward, False)
                         if len(self.router_memory) > self.batch_size:
@@ -105,6 +111,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         # --- CLEANUP ET SYNCHRO ---
                         self.next_workload_slices = {w_id: self._get_routed_slice_for_node(w_id) for w_id in self.registered_workers.keys()}
                         
+                        self.last_known_metrics = self.collected_metrics.copy()
+
                         self.global_step_counter += 1
                         self.collected_metrics.clear()
                         self.lock.notify_all() 
@@ -146,36 +154,41 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         sliced_queries.append(q_text)
             return sliced_queries
         
-    def export_benchmark_files(self, output_dir="."):
+    def export_benchmark_files(self, output_dir="./output/"):
         '''
         Export the final routing configuration and associated template-column mappings 
         for benchmark evaluation.
         '''
-        import csv
-        import os
-        
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
         routes_path = os.path.join(output_dir, "routes.csv")
         config_path = os.path.join(output_dir, "config.csv")
         
-        final_routes = [str(int(rep_id)) for rep_id in self.routing_table_state]
-        
         with open(routes_path, "w", newline="") as f:
-            f.write(",".join(final_routes) + "\n")
-        print(f"[Benchmark Export] File exported successfully : {routes_path}")
-        
+            f.write(",".join([str(int(r)) for r in self.routing_table_state]) + "\n")
+
         with open(config_path, "w", newline="") as f:
             writer = csv.writer(f, lineterminator="\n")
             
-            mock_columns_by_template = {
-                0: ["l_shipdate", "l_discount", "l_quantity"],
-                1: ["p_partkey", "ps_partkey", "s_suppkey"],
-                2: ["o_orderdate", "o_orderkey"],
-                3: ["l_orderkey", "l_shipdate"]
-            }
+            data_map = {}
             
-            for template_idx, target_replica in enumerate(self.routing_table_state):
-                cols = mock_columns_by_template.get(template_idx % 4, ["l_orderkey"])
-                row = [int(target_replica)] + cols
+            for replica_id, worker_data in self.last_known_metrics.items():
+                indexes = worker_data.get('indexes', [])
+                
+                for index_str in indexes:
+                    parts = index_str.split('_')
+                    if len(parts) >= 2:
+                        table = parts[0]
+                        col = "_".join(parts[1:])
+                        
+                        key = (replica_id, table)
+                        if key not in data_map:
+                            data_map[key] = set()
+                        data_map[key].add(col)
+            
+            for (replica_id, table), cols in data_map.items():
+                row = [replica_id-1] + sorted(list(cols))
                 writer.writerow(row)
                     
-        print(f"[Benchmark Export] File exported successfully : {config_path}")
+        print(f"[Benchmark Export] Config exportée par table/réplicat : {config_path}")
