@@ -66,7 +66,7 @@ if __name__ == '__main__':
 
     # Instantiate the Server Servicer using the dynamic configuration parameters discovered
     print(f"[Master Orchestrator] Initializing QDinaServerServicer with {num_replicas} replicas and 22 templates...")
-    servicer = QDinaServerServicer(n_replicas=num_replicas, n_templates=22, batch_size=16)
+    servicer = QDinaServerServicer(n_replicas=num_replicas, n_templates=22, batch_size=64)
     servicer.execution_mode = args.mode
     servicer.current_workload_pool = initial_queries
     servicer.workload_templates_map = initial_map
