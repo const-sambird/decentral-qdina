@@ -68,8 +68,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             worker_id = request.replica_id
             
             with self.lock:
-                local_step = self.global_step_counter
-                
                 self.collected_metrics[worker_id] = {
                     'total_cost': request.total_cost,
                     'costs': list(request.costs),
@@ -77,6 +75,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     'indexes': list(request.active_indexes)
                 }
                 
+                local_step = self.global_step_counter
                 while self.global_step_counter == local_step and not self.stop_training_signal:
                     if len(self.collected_metrics) < self.env.n_replicas:
                         self.lock.wait()
@@ -88,26 +87,22 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         
                         state = self.env._get_obs()
                         action = self.agent.select_action(state, self.epsilon)
-                        next_state, reward, _, _, info = self.env.step(action, external_costs=costs_array, external_template_costs=template_costs_array)
-                        
-                        jain = info.get('jain_index', 1.0)
-                        mkspan = float(np.max(costs_array))
-                        self.epsilon = max(0.4, self.epsilon * 0.999)
-                        
-                        self.router_memory.push(state, action, next_state, reward, False)
-                        if len(self.router_memory) > self.batch_size:
-                            self.agent.learn(self.router_memory, batch_size=self.batch_size)
+                        next_state, reward, _, _, info = self.env.step(
+                            action, 
+                            external_costs=np.clip(costs_array, 0, 1e9), 
+                            external_template_costs=template_costs_array
+                        )
                         
                         self.routing_table_state = np.copy(next_state[:self.env.n_templates])
-                        table_str = " ".join(str(int(node)) for node in self.routing_table_state)
-                        
-                        print(f"[Router State] Table : [{table_str}]")
-                        print(f"[Router Learn] Step {local_step:2d} | Makespan: {mkspan:14.2f} | Jain Index: {jain:.4f} | Reward: {reward:15.2f} | Epsilon: {self.epsilon:.3f}")
-                        
                         self.next_workload_slices = {w_id: self._get_routed_slice_for_node(w_id) for w_id in self.registered_workers.keys()}
+                        
+                        table_str = " ".join(str(int(node)) for node in self.routing_table_state)
+                        print(f"[Router State] Table : [{table_str}]")
+                        print(f"[Router Learn] Step {local_step:2d} | Makespan: {float(np.max(costs_array)):14.2f} | Jain Index: {info.get('jain_index', 1.0):.4f} | Reward: {reward:15.2f} | Epsilon: {max(0.4, self.epsilon * 0.999):.3f}")
+                        
                         self.global_step_counter += 1
                         self.collected_metrics.clear()
-                        self.lock.notify_all()
+                        self.lock.notify_all() # Réveil de tous les agents en attente
                 
                 sliced_queries = self.next_workload_slices.get(worker_id, [])
                 return qdina_pb2.WorkloadSlice(stop_training=self.stop_training_signal, queries=sliced_queries)
