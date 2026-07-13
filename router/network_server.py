@@ -67,15 +67,16 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
 
             worker_id = request.replica_id
+            
             with self.lock:
-                local_step = self.global_step_counter
-                
                 self.collected_metrics[worker_id] = {
                     'total_cost': request.total_cost,
                     'costs': list(request.costs),
                     'storage_used': request.storage_used,
                     'indexes': list(request.active_indexes)
                 }
+                
+                local_step = self.global_step_counter
                 
                 while self.global_step_counter == local_step and not self.stop_training_signal:
                     if len(self.collected_metrics) < self.env.n_replicas:
@@ -96,6 +97,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         
                         self.routing_table_state = np.copy(next_state[:self.env.n_templates])
                         self.next_workload_slices = {w_id: self._get_routed_slice_for_node(w_id) for w_id in self.registered_workers.keys()}
+
+                        self.last_known_metrics = self.collected_metrics.copy()
                         
                         table_str = " ".join(str(int(node)) for node in self.routing_table_state)
                         print(f"[Router State] Table : [{table_str}]")
@@ -103,8 +106,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         
                         self.global_step_counter += 1
                         self.collected_metrics.clear()
-                        self.lock.notify_all() 
-                
+                        self.lock.notify_all()
+
                 sliced_queries = self.next_workload_slices.get(worker_id, [])
                 return qdina_pb2.WorkloadSlice(stop_training=self.stop_training_signal, queries=sliced_queries)
 
