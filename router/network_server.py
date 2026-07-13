@@ -65,9 +65,11 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         try:
             if not self.ready_to_train:
                 return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
+
             worker_id = request.replica_id
-            
             with self.lock:
+                local_step = self.global_step_counter
+                
                 self.collected_metrics[worker_id] = {
                     'total_cost': request.total_cost,
                     'costs': list(request.costs),
@@ -75,7 +77,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     'indexes': list(request.active_indexes)
                 }
                 
-                local_step = self.global_step_counter
                 while self.global_step_counter == local_step and not self.stop_training_signal:
                     if len(self.collected_metrics) < self.env.n_replicas:
                         self.lock.wait()
@@ -102,11 +103,11 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         
                         self.global_step_counter += 1
                         self.collected_metrics.clear()
-                        self.lock.notify_all() # Réveil de tous les agents en attente
+                        self.lock.notify_all() 
                 
                 sliced_queries = self.next_workload_slices.get(worker_id, [])
                 return qdina_pb2.WorkloadSlice(stop_training=self.stop_training_signal, queries=sliced_queries)
-                
+
         except Exception as server_err:
             print(f"[CRITICAL MASTER ERROR] Error {request.replica_id} : {server_err}")
             raise server_err
