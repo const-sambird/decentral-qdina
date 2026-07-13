@@ -78,8 +78,9 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 }
                 
                 while self.global_step_counter == local_step and not self.stop_training_signal:
-                    
-                    if len(self.collected_metrics) == self.env.n_replicas:
+                    if len(self.collected_metrics) < self.env.n_replicas:
+                        self.lock.wait()
+                    else:
                         sorted_workers = sorted(self.collected_metrics.keys())
                         costs_array = np.array([self.collected_metrics[w_id]['total_cost'] for w_id in sorted_workers], dtype=np.float64)
                         all_template_costs = [self.collected_metrics[w_id]['costs'] for w_id in sorted_workers]
@@ -87,12 +88,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         
                         state = self.env._get_obs()
                         action = self.agent.select_action(state, self.epsilon)
-                        
-                        next_state, reward, _, _, info = self.env.step(
-                            action, 
-                            external_costs=costs_array, 
-                            external_template_costs=template_costs_array
-                        )
+                        next_state, reward, _, _, info = self.env.step(action, external_costs=costs_array, external_template_costs=template_costs_array)
                         
                         jain = info.get('jain_index', 1.0)
                         mkspan = float(np.max(costs_array))
@@ -108,28 +104,16 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         print(f"[Router State] Table : [{table_str}]")
                         print(f"[Router Learn] Step {local_step:2d} | Makespan: {mkspan:14.2f} | Jain Index: {jain:.4f} | Reward: {reward:15.2f} | Epsilon: {self.epsilon:.3f}")
                         
-                        # --- CLEANUP ET SYNCHRO ---
                         self.next_workload_slices = {w_id: self._get_routed_slice_for_node(w_id) for w_id in self.registered_workers.keys()}
-                        
-                        self.last_known_metrics = self.collected_metrics.copy()
-
                         self.global_step_counter += 1
                         self.collected_metrics.clear()
-                        self.lock.notify_all() 
-                        break
-                    else:
-                        self.lock.wait()
+                        self.lock.notify_all()
                 
                 sliced_queries = self.next_workload_slices.get(worker_id, [])
-                return qdina_pb2.WorkloadSlice(
-                    stop_training=self.stop_training_signal,
-                    queries=sliced_queries
-                )
+                return qdina_pb2.WorkloadSlice(stop_training=self.stop_training_signal, queries=sliced_queries)
                 
         except Exception as server_err:
             print(f"[CRITICAL MASTER ERROR] Error {request.replica_id} : {server_err}")
-            import traceback
-            traceback.print_exc()
             raise server_err
 
     def _get_routed_slice_for_node(self, node_id):
