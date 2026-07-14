@@ -37,7 +37,7 @@ if __name__ == '__main__':
         db_user=cfg['user'],
         db_password=cfg['password'],
         db_name=cfg['dbname'],
-        storage_budget=30.0
+        storage_budget=40.0
     )
     
     try:
