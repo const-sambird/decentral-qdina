@@ -170,7 +170,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 print(f"[Router Learn] Step {self.global_step_counter:2d} | Makespan: {float(np.max(costs_array)):14.2f} | Jain Index: {info.get('jain_index', 1.0):.4f} | Reward: {reward:15.2f} | Epsilon: {max(0.4, self.epsilon * 0.999):.3f} | Workers: {len(sorted_workers)}")
 
                                 # Store the experience in the replay memory for training.
-                                self.router_memory.push(state, action, next_state, reward)
+                                self.router_memory.push(state, action, next_state, reward, None)
 
                                 # If we have enough experiences, perform a learning step to update the agent's policy.
                                 if len(self.router_memory) >= self.batch_size:
