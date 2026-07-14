@@ -49,6 +49,9 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.ready_to_train = False
 
         self.last_known_metrics = {}
+        self.worker_workload_versions = {}
+        self.steps_per_episode = 20
+        self.step_computed = False 
 
     def RegisterWorker(self, request, context):
         with self.lock:
@@ -62,58 +65,156 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             return qdina_pb2.RegistrationResponse(status=True, message="Registered")
 
     def SubmitMetricsAndGetWorkload(self, request, context):
+        """
+        This method is called by each worker to send its local metrics and receive
+        its assigned queries for the next step. The router waits for ALL workers to
+        submit before computing the next routing decision and slicing the workload.
+
+        Returns:
+            WorkloadSlice: a protobuf message containing the queries for this worker, 
+            or a stop signal to end the episode.
+        """
         try:
+            # If the router hasn't finished waiting for all workers to register,
+            # send an empty slice and tell the worker not to stop yet.
             if not self.ready_to_train:
                 return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
 
             worker_id = request.replica_id
-            
+
+            # Lock the condition variable to safely modify shared state.
             with self.lock:
+                # Update the worker's last seen timestamp to prevent it from being
+                # considered dead (timeout).
+                if worker_id in self.registered_workers:
+                    self.registered_workers[worker_id]['last_seen'] = time.time()
+
+                # Store the metrics that this worker sent for the current step.
                 self.collected_metrics[worker_id] = {
+                    'step': self.global_step_counter,
                     'total_cost': request.total_cost,
                     'costs': list(request.costs),
                     'storage_used': request.storage_used,
                     'indexes': list(request.active_indexes)
                 }
-                
-                local_step = self.global_step_counter
-                
-                while self.global_step_counter == local_step and not self.stop_training_signal:
-                    if len(self.collected_metrics) < self.env.n_replicas:
-                        self.lock.wait()
-                    else:
-                        sorted_workers = sorted(self.collected_metrics.keys())
-                        costs_array = np.array([self.collected_metrics[w_id]['total_cost'] for w_id in sorted_workers], dtype=np.float64)
-                        all_template_costs = [self.collected_metrics[w_id]['costs'] for w_id in sorted_workers]
-                        template_costs_array = np.sum(all_template_costs, axis=0)
-                        
-                        state = self.env._get_obs()
-                        action = self.agent.select_action(state, self.epsilon)
-                        next_state, reward, _, _, info = self.env.step(
-                            action, 
-                            external_costs=np.clip(costs_array, 0, 1e9), 
-                            external_template_costs=template_costs_array
-                        )
-                        
-                        self.routing_table_state = np.copy(next_state[:self.env.n_templates])
-                        self.next_workload_slices = {w_id: self._get_routed_slice_for_node(w_id) for w_id in self.registered_workers.keys()}
 
-                        self.last_known_metrics = self.collected_metrics.copy()
-                        
-                        table_str = " ".join(str(int(node)) for node in self.routing_table_state)
-                        print(f"[Router State] Table : [{table_str}]")
-                        print(f"[Router Learn] Step {local_step:2d} | Makespan: {float(np.max(costs_array)):14.2f} | Jain Index: {info.get('jain_index', 1.0):.4f} | Reward: {reward:15.2f} | Epsilon: {max(0.4, self.epsilon * 0.999):.3f}")
-                        
-                        self.global_step_counter += 1
-                        self.collected_metrics.clear()
+                # Remember which step we are currently waiting for.
+                target_step = self.global_step_counter
+
+                # Synchronization barrier: wait until the step advances or we receive
+                # a stop signal. We cannot move forward until all workers have submitted.
+                while self.global_step_counter == target_step:
+                    # If the router has signaled the end of the episode, we still need
+                    # to wait for all workers to finish the current step.
+                    if self.stop_training_signal:
+                        # If all workers have submitted, break to return the stop signal.
+                        if len(self.collected_metrics) >= len(self.registered_workers):
+                            break
+                        else:
+                            # Otherwise, wait for the remaining workers.
+                            self.lock.wait()
+                            continue
+
+                    # Check for workers that have not sent any request for more than
+                    # 10 seconds. Remove them to avoid infinite waiting.
+                    now = time.time()
+                    dead_workers = [wid for wid, info in self.registered_workers.items()
+                                    if now - info['last_seen'] > 10.0]
+                    for wid in dead_workers:
+                        del self.registered_workers[wid]
+                        self.collected_metrics.pop(wid, None)
+                    if dead_workers:
+                        # Wake up all threads to recalculate the number of active workers.
                         self.lock.notify_all()
+                        continue
 
+                    # If all currently registered workers have submitted, we can
+                    # proceed with the step computation.
+                    if len(self.collected_metrics) >= len(self.registered_workers):
+                        # Ensure only one worker executes the computation (the leader).
+                        if not self.step_computed:
+                            self.step_computed = True
+                            try:
+                                # --- Leader computes the next routing decision ---
+                                # Gather the total costs from all workers.
+                                sorted_workers = sorted(self.collected_metrics.keys())
+                                costs_array = np.array([self.collected_metrics[w_id]['total_cost'] for w_id in sorted_workers], dtype=np.float64)
+                                # Sum template-level costs across workers to get global costs.
+                                all_template_costs = [self.collected_metrics[w_id]['costs'] for w_id in sorted_workers]
+                                template_costs_array = np.sum(all_template_costs, axis=0)
+
+                                # Get the current state from the global environment.
+                                state = self.env._get_obs()
+                                # Choose an action (exploration vs exploitation) using the agent.
+                                action = self.agent.select_action(state, self.epsilon)
+                                # Apply the action and update the environment with the costs.
+                                next_state, reward, _, _, info = self.env.step(
+                                    action,
+                                    external_costs=np.clip(costs_array, 0, 1e9),
+                                    external_template_costs=template_costs_array
+                                )
+
+                                # Update the routing table (which replica handles each template).
+                                self.routing_table_state = np.copy(next_state[:self.env.n_templates])
+                                # For each worker, compute the list of queries they will handle next.
+                                self.next_workload_slices = {
+                                    w_id: self._get_routed_slice_for_node(w_id)
+                                    for w_id in self.registered_workers.keys()
+                                }
+                                # Save metrics for later export (benchmarking).
+                                self.last_known_metrics = self.collected_metrics.copy()
+
+                                # Log the current routing table and performance metrics.
+                                table_str = " ".join(str(int(node)) for node in self.routing_table_state)
+                                print(f"[Router State] Table : [{table_str}]")
+                                print(f"[Router Learn] Step {self.global_step_counter:2d} | Makespan: {float(np.max(costs_array)):14.2f} | Jain Index: {info.get('jain_index', 1.0):.4f} | Reward: {reward:15.2f} | Epsilon: {max(0.4, self.epsilon * 0.999):.3f} | Workers: {len(sorted_workers)}")
+
+                                # Store the experience in the replay memory for training.
+                                self.router_memory.push(state, action, next_state, reward)
+
+                                # If we have enough experiences, perform a learning step to update the agent's policy.
+                                if len(self.router_memory) >= self.batch_size:
+                                    self.agent.learn(self.router_memory, self.batch_size)
+
+                                # Advance to the next step.
+                                self.global_step_counter += 1
+                                # Clear the collected metrics for the next step.
+                                self.collected_metrics.clear()
+                                # Release the leader role.
+                                self.step_computed = False
+                                # Wake up all waiting workers so they can proceed.
+                                self.lock.notify_all()
+                                # Exit the while loop because the step has changed.
+                                break
+
+                            except Exception as e:
+                                # If something goes wrong during computation, stop training.
+                                print(f"[CRITICAL] Leader computation error: {e}")
+                                self.step_computed = False
+                                self.lock.notify_all()
+                                self.stop_training_signal = True
+                                return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
+                        else:
+                            # Another worker is already the leader; wait for it.
+                            self.lock.wait()
+                    else:
+                        # Not all workers have submitted yet; wait for more.
+                        self.lock.wait()
+
+                # After exiting the loop, if the stop signal is active, tell the worker to stop.
+                if self.stop_training_signal:
+                    # Clear any pending workload slices to avoid sending queries.
+                    self.next_workload_slices = {}
+                    return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
+
+                # Retrieve the queries assigned to this specific worker for the next step.
                 sliced_queries = self.next_workload_slices.get(worker_id, [])
-                return qdina_pb2.WorkloadSlice(stop_training=self.stop_training_signal, queries=sliced_queries)
+                return qdina_pb2.WorkloadSlice(stop_training=False, queries=sliced_queries)
 
-        except Exception as server_err:
-            print(f"[CRITICAL MASTER ERROR] Error {request.replica_id} : {server_err}")
-            raise server_err
+        except Exception as e:
+            # Catch any unexpected error and force a stop to avoid hanging workers.
+            print(f"[CRITICAL] Unhandled error in SubmitMetricsAndGetWorkload: {e}")
+            return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
 
     def _get_routed_slice_for_node(self, node_id):
         sorted_workers = sorted(self.registered_workers.keys())

@@ -87,6 +87,7 @@ if __name__ == '__main__':
             
             if current_count >= num_replicas:
                 print(f"[Master Orchestrator] All {num_replicas} replicas connected!")
+                servicer.ready_to_train = True 
                 break
                 
             print(f"[Master Orchestrator] Registered {current_count}/{num_replicas} replicas... waiting...")
@@ -99,7 +100,7 @@ if __name__ == '__main__':
         steps_per_episode = 20
         epsilon_start = 1.0
         epsilon_min = 0.20
-        decay_rate = 0.995
+        decay_rate = 0.990
         
         for episode in range(args.episodes):
             print(f"\n--- [Master Orchestrator] Starting Global Episode {episode + 1}/{args.episodes} ---")

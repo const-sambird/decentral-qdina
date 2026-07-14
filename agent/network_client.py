@@ -24,7 +24,7 @@ from common.profiling import Profiler
 class QDinaNetworkClient:
     def __init__(self, replica_id: int, server_address: str, agent_mode: str, 
                  db_host: str, db_port: int, db_user: str, db_password: str, 
-                 db_name: str, storage_budget: float = 10.0):
+                 db_name: str, storage_budget: float = 5.0):
         '''
         Decentralized gRPC Client worker orchestrating local reinforcement learning indexing.
         '''
