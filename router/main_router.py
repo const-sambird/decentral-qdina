@@ -100,7 +100,7 @@ if __name__ == '__main__':
         steps_per_episode = 50
         epsilon_start = 1.0
         epsilon_min = 0.20
-        decay_rate = 0.985
+        decay_rate = 0.95
         
         for episode in range(args.episodes):
             print(f"\n--- [Master Orchestrator] Starting Global Episode {episode + 1}/{args.episodes} ---")
