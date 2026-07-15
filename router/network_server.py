@@ -241,103 +241,82 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
     def export_benchmark_files(self, output_dir="./output/"):
         """
         Export the routing table and index configuration to CSV files for the benchmark.
-        The indexes are grouped by replica and by table, with one line per group.
+        Each index is written on a separate line with its columns separated by commas,
+        exactly as expected by the benchmark (one composite index per line).
         """
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
-            
+
         routes_path = os.path.join(output_dir, "routes.csv")
         config_path = os.path.join(output_dir, "config.csv")
-        
-        # Mapping full table name -> column prefix
-        TABLE_TO_PREFIX = {
-            'customer': 'c_',
-            'lineitem': 'l_',
-            'part': 'p_',
-            'partsupp': 'ps_',
-            'orders': 'o_',
-            'nation': 'n_',
-            'region': 'r_',
-            'supplier': 's_'
-        }
-        
-        # List of known column prefixes (sorted by descending length to avoid conflicts)
+
+        # Known column prefixes, sorted by descending length to avoid conflicts (e.g., 'ps_' before 'p_')
         COLUMN_PREFIXES = ['ps_', 'c_', 'l_', 'p_', 'o_', 'n_', 'r_', 's_']
-        
+
         def split_columns(rest):
             """
-            Decompose a string like 'l_orderkey_l_shipdate' into a list of columns
-            by recognizing known prefixes.
+            Decompose a compressed string like 'l_orderkey_l_shipdate' into a list
+            of individual column names by recognizing known prefixes.
+            Returns: ['l_orderkey', 'l_shipdate']
             """
             cols = []
             i = 0
             while i < len(rest):
                 found = False
                 for prefix in COLUMN_PREFIXES:
+                    # Check if the current position matches a known prefix
                     if rest.startswith(prefix, i):
                         start = i
                         i += len(prefix)
-                        # Move forward until the next underscore followed by a prefix, or end of string
+                        # Advance until the next underscore followed by a prefix, or end of string
                         while i < len(rest):
                             if rest[i] == '_':
-                                # Check if there is a known prefix after the underscore
                                 next_pos = i + 1
+                                # Look ahead to see if a known prefix starts after the underscore
                                 if any(rest.startswith(p, next_pos) for p in COLUMN_PREFIXES):
                                     break
                             i += 1
+                        # Append the extracted column name
                         cols.append(rest[start:i])
                         found = True
-                        # If we stopped on an underscore, skip it
+                        # Skip the separating underscore
                         if i < len(rest) and rest[i] == '_':
                             i += 1
                         break
                 if not found:
-                    # Unlikely case: take the rest
+                    # Fallback: take the remaining substring as one column
                     cols.append(rest[i:])
                     break
             return cols
-        
-        # Export the routing table
+
+        # --- 1. Export the routing table ---
+        # Write the routing table as a single CSV line mapping each template to a replica
         with open(routes_path, "w", newline="") as f:
             f.write(",".join([str(int(r)) for r in self.routing_table_state]) + "\n")
 
-        # Export the index configuration, grouped by table and replica
+        # --- 2. Export the index configuration ---
+        # Write one line per composite index, with the replica ID first, followed by its columns
         with open(config_path, "w", newline="") as f:
             writer = csv.writer(f, lineterminator="\n")
-            
-            # Structure: dict[(replica_id, prefix)] = set of column names (with their prefix)
-            grouped = {}
-            
+
+            # Iterate over each replica's active indexes
             for replica_id, worker_data in self.last_known_metrics.items():
                 indexes = worker_data.get('indexes', [])
                 for composite in indexes:
-                    # Expected format: "table_complete_col1_col2_..."
+                    # Expected format: "table_complete_col1_col2_..." (e.g., "lineitem_l_orderkey_l_shipdate")
                     parts = composite.split('_', 1)
                     if len(parts) != 2:
+                        # Skip malformed entries
                         continue
-                    table_full, rest = parts
-                    
-                    # Get the corresponding short prefix
-                    prefix = TABLE_TO_PREFIX.get(table_full)
-                    if prefix is None:
-                        # Fallback: if the table is not recognized, take the first letter + '_'
-                        prefix = table_full[0] + '_'
-                    
-                    # Decompose the columns
+                    table_full, rest = parts  # table_full is "lineitem", rest is "l_orderkey_l_shipdate"
+
+                    # Decompose the concatenated columns into individual prefixed column names
                     cols = split_columns(rest)
                     if not cols:
                         continue
-                    
-                    # Group by (replica, prefix)
-                    key = (replica_id, prefix)
-                    if key not in grouped:
-                        grouped[key] = set()
-                    grouped[key].update(cols)
-            
-            # Write the sorted rows
-            for (replica_id, prefix), cols_set in sorted(grouped.items()):
-                cols = sorted(list(cols_set))
-                row = [replica_id - 1] + cols
-                writer.writerow(row)
-                        
+
+                    # Build the row: replica ID (0-based) followed by the columns
+                    row = [replica_id - 1] + cols
+                    writer.writerow(row)
+
         print(f"[Benchmark Export] Config exported successfully: {config_path}")
