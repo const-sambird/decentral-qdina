@@ -47,7 +47,8 @@ class GlobalRoutingEnv(gym.Env):
         if options and 'initial_routing' in options:
             self._state_routes = np.array(options['initial_routing'], dtype=np.int32)
         else:
-            self._state_routes = np.random.randint(0, self.n_replicas, size=self.n_templates, dtype=np.int32)
+            # self._state_routes = np.random.randint(0, self.n_replicas, size=self.n_templates, dtype=np.int32)
+            self._state_routes = np.array([i % self.n_replicas for i in range(self.n_templates)], dtype=np.int32)
         
         self._state_costs = np.zeros(self.n_templates, dtype=np.float64)
         return self._get_obs(), {}
@@ -79,7 +80,7 @@ class GlobalRoutingEnv(gym.Env):
             jain_index = 1.0
 
         makespan_scaled = np.log10(makespan_raw + 1.0)
-        reward = -makespan_scaled + (jain_index * 2.0)
+        reward = -makespan_scaled + (jain_index * 3.0)
         
         if np.any(costs == 0.0) and np.sum(costs) > 0:
             reward -= 5.0 

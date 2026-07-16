@@ -103,3 +103,8 @@ class RouterAgent:
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         
         self.optimizer.step()
+
+
+    def soft_update(self, tau=0.005):
+        for target_param, policy_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
+            target_param.data.copy_(tau * policy_param.data + (1 - tau) * target_param.data)

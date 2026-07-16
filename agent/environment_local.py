@@ -140,8 +140,8 @@ class LocalIndexingEnv(gym.Env):
         
         terminated = False
         if used_storage > self.storage_budget:
-            reward = -100.0
-            terminated = True
+            reward = -1000.0
+            terminated = False
             
         truncated = False
         return self._current_workload_state, reward, terminated, truncated, {

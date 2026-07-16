@@ -31,7 +31,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.epsilon = 1.0
         self.batch_size = batch_size
         
-        self.router_memory = ReplayMemory(capacity=2000)
+        self.router_memory = ReplayMemory(capacity=5000)
         
         # Threading primitives for synchronization
         self.lock = threading.Condition()
@@ -150,7 +150,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 # Apply the action and update the environment with the costs.
                                 next_state, reward, _, _, info = self.env.step(
                                     action,
-                                    external_costs=np.clip(costs_array, 0, 1e9),
+                                    # external_costs=np.clip(costs_array, 0, 1e9),
+                                    external_costs=costs_array,
                                     external_template_costs=template_costs_array
                                 )
 
@@ -175,6 +176,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 # If we have enough experiences, perform a learning step to update the agent's policy.
                                 if len(self.router_memory) >= self.batch_size:
                                     self.agent.learn(self.router_memory, self.batch_size)
+                                    self.agent.soft_update()
 
                                 # Advance to the next step.
                                 self.global_step_counter += 1

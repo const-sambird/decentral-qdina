@@ -267,13 +267,13 @@ class QDinaNetworkClient:
                 action = self._select_action(local_state)
                 next_state, reward, terminated, truncated, info = self.env.step(action, queries=current_queries)
 
-                if terminated:
-                    print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
-                    local_state, _ = self.env.reset()
-                    current_cost_tracker = 0.0
-                    current_storage_usage = 0.0
-                    costs_per_template = [0.0] * self.n_templates
-                    continue
+                # if terminated:
+                #     print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
+                #     local_state, _ = self.env.reset()
+                #     current_cost_tracker = 0.0
+                #     current_storage_usage = 0.0
+                #     costs_per_template = [0.0] * self.n_templates
+                #     continue
 
                 self.local_memory.push(local_state, action, next_state, reward, terminated)
                 local_state = next_state

@@ -97,7 +97,7 @@ if __name__ == '__main__':
 
         print(f"[Master Orchestrator] Total queries in initial workload: {len(initial_queries)}")
         
-        steps_per_episode = 50
+        steps_per_episode = 100
         epsilon_start = 1.0
         epsilon_min = 0.20
         decay_rate = 0.95
