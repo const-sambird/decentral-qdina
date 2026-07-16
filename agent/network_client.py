@@ -267,13 +267,13 @@ class QDinaNetworkClient:
                 action = self._select_action(local_state)
                 next_state, reward, terminated, truncated, info = self.env.step(action, queries=current_queries)
 
-                # if terminated:
-                #     print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
-                #     local_state, _ = self.env.reset()
-                #     current_cost_tracker = 0.0
-                #     current_storage_usage = 0.0
-                #     costs_per_template = [0.0] * self.n_templates
-                #     continue
+                if terminated:
+                    print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
+                    local_state, _ = self.env.reset()
+                    current_cost_tracker = 0.0
+                    current_storage_usage = 0.0
+                    costs_per_template = [0.0] * self.n_templates
+                    continue
 
                 self.local_memory.push(local_state, action, next_state, reward, terminated)
                 local_state = next_state
@@ -287,8 +287,12 @@ class QDinaNetworkClient:
                     costs_per_template = [float(c) for c in info['costs']]
                 else:
                     costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
-                    
-                print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Storage: {current_storage_usage:.1f}MB | Epsilon: {self.epsilon:.2f}")
+                
+                if current_storage_usage > 1_000_000_000:
+                    storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
+                else:
+                    storage_str = f"{current_storage_usage / 1_000_000:.2f} MB"
+                print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.2f}")
 
                 if not response.stop_training:
                     self.epsilon = max(0.3, self.epsilon * 0.999)
