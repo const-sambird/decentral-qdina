@@ -5,6 +5,9 @@ REPO_DIR="decentral-qdina"
 if [ ! -d "$REPO_DIR" ]; then
     sudo sed -i '1i host    all             sam             127.0.0.1/32            trust' /etc/postgresql/17/main/pg_hba.conf && sudo systemctl restart postgresql
     sudo sed -i '$a host    tpchdb          sam             10.10.1.0/24            trust' /etc/postgresql/17/main/pg_hba.conf    
+    sudo sed -i '/host.*0.0.0.0\/0/d' /etc/postgresql/17/main/pg_hba.conf
+    sudo sed -i '/host.*::\/0/d' /etc/postgresql/17/main/pg_hba.conf
+    sudo systemctl restart postgresql
     echo "Cloning repository..."
     git clone https://github.com/const-sambird/decentral-qdina.git
     cd "$REPO_DIR" || exit
