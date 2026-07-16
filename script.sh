@@ -32,8 +32,8 @@ if [ "$1" == "--node" ] && [ "$2" == "router" ]; then
 elif [ "$1" == "--node" ] && [ "$2" -ge 1 ] && [ "$2" -le 6 ] 2>/dev/null; then
     ROUTER_IP="10.10.1.1"
     echo "Starting Agent Node $2 connecting to Router at ${ROUTER_IP}:50051..."
-    echo "python3 -m agent.main_agent --id $2 --mode quantum --server ${ROUTER_IP}:50051 --config replicas-cloudlab.csv"
-    tmux send-keys -t qdina "python3 -m agent.main_agent --id $2 --mode quantum --server ${ROUTER_IP}:50051 --config replicas-cloudlab.csv" C-m
+    echo "python3 -m agent.main_agent --id $2 --mode classical --server ${ROUTER_IP}:50051 --config replicas-cloudlab.csv"
+    tmux send-keys -t qdina "python3 -m agent.main_agent --id $2 --mode classical --server ${ROUTER_IP}:50051 --config replicas-cloudlab.csv" C-m
 else
     echo "Usage for Router : ./start.sh --node router"
     echo "Usage for Agent  : ./start.sh --node <1-6> --router-ip <IP_ADDRESS>"
