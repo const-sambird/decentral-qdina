@@ -38,6 +38,5 @@ where
 	and n_name = 'JORDAN'
 order by
 	s_name;
-set rowcount -1
-go
+
 

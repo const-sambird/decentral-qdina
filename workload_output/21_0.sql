@@ -40,6 +40,5 @@ group by
 order by
 	numwait desc,
 	s_name;
-set rowcount 100
-go
+
 

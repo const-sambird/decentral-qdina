@@ -32,6 +32,5 @@ where
     )
 order by
     s_suppkey;
-set rowcount -1
-go
+
 

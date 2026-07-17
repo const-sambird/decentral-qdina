@@ -44,6 +44,5 @@ order by
 	n_name,
 	s_name,
 	p_partkey;
-set rowcount 100
-go
+
 

@@ -38,6 +38,5 @@ group by
 	cntrycode
 order by
 	cntrycode;
-set rowcount -1
-go
+
 

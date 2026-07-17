@@ -14,6 +14,5 @@ where
 	l_partkey = p_partkey
 	and l_shipdate >= date '1995-03-01'
 	and l_shipdate < date '1995-03-01' + interval '1' month;
-set rowcount -1
-go
+
 

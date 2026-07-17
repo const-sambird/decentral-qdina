@@ -33,6 +33,5 @@ group by
 order by
 	nation,
 	o_year desc;
-set rowcount -1
-go
+
 

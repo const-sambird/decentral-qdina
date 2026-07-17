@@ -10,6 +10,5 @@ where
 	and l_shipdate < date '1994-01-01' + interval '1' year
 	and l_discount between 0.07 - 0.01 and 0.07 + 0.01
 	and l_quantity < 25;
-set rowcount -1
-go
+
 

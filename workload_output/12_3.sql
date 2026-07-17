@@ -29,6 +29,5 @@ group by
 	l_shipmode
 order by
 	l_shipmode;
-set rowcount -1
-go
+
 

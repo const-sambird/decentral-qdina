@@ -18,6 +18,5 @@ where
 		where
 			l_partkey = p_partkey
 	);
-set rowcount -1
-go
+
 

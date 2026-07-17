@@ -28,6 +28,5 @@ group by
 		)
 order by
 	value desc;
-set rowcount -1
-go
+
 

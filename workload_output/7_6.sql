@@ -40,6 +40,5 @@ order by
 	supp_nation,
 	cust_nation,
 	l_year;
-set rowcount -1
-go
+
 

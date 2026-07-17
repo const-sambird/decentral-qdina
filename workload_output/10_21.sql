@@ -32,6 +32,5 @@ group by
 	c_comment
 order by
 	revenue desc;
-set rowcount 20
-go
+
 

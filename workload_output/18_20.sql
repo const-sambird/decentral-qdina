@@ -33,6 +33,5 @@ group by
 order by
 	o_totalprice desc,
 	o_orderdate;
-set rowcount 100
-go
+
 

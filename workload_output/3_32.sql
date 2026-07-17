@@ -23,6 +23,5 @@ group by
 order by
 	revenue desc,
 	o_orderdate;
-set rowcount 10
-go
+
 

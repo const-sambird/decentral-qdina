@@ -38,6 +38,5 @@ group by
 	o_year
 order by
 	o_year;
-set rowcount -1
-go
+
 

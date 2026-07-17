@@ -25,6 +25,5 @@ group by
 	n_name
 order by
 	revenue desc;
-set rowcount -1
-go
+
 
