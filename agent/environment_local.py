@@ -171,12 +171,16 @@ class LocalIndexingEnv(gym.Env):
             required_space = self._get_candidate_size(candidate)
             # Check if adding this index would exceed the budget
             if self._spaces_used + required_space > self.storage_budget:
-                # Budget violation: reject the action and terminate the episode
-                # (following the original qDINA behaviour)
-                reward = -1000.0
-                terminated = True
+                deficit = (self._spaces_used + required_space) - self.storage_budget
+                penalty = 50.0 * (deficit / self.storage_budget)
+                current_costs = self._estimate_workload_costs(queries)
+                perf_gain = sum(self.initial_costs) - sum(current_costs)
+                reward_t = perf_gain
+                used_storage = self._spaces_used
+                reward_s = max(0.0, (self.storage_budget - used_storage) / self.storage_budget)
+                reward = (self.alpha * reward_t) + (self.beta * reward_s)
+                terminated = False
                 truncated = False
-                # Return the unchanged state
                 return self._current_workload_state, reward, terminated, truncated, {
                     'costs': self.initial_costs,
                     'total_cost': sum(self.initial_costs),
