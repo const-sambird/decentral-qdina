@@ -20,7 +20,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         '''
         self.n_templates = n_templates
         self.n_replicas = n_replicas
-        
+
         self.env = GlobalRoutingEnv(n_templates=n_templates, n_replicas=n_replicas)
         self.agent = RouterAgent(n_templates=n_templates, n_replicas=n_replicas, n_actions=self.env.n_actions)
 
@@ -183,7 +183,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 # Log the current routing table and performance metrics.
                                 table_str = " ".join(str(int(node)) for node in self.routing_table_state)
                                 print(f"[Router State] Table : [{table_str}]")
-                                print(f"[Router Learn] Step {self.global_step_counter:2d} | Makespan: {float(np.max(costs_array)):14.2f} | Jain Index: {info.get('jain_index', 1.0):.4f} | Reward: {reward:15.2f} | Epsilon: {max(0.4, self.epsilon * 0.999):.3f} | Workers: {len(sorted_workers)}")
+                                print(f"[Router Learn] Step {self.global_step_counter:2d} | Makespan: {float(np.max(costs_array)):14.2f} | Jain Index: {info.get('jain_index', 1.0):.4f} | Reward: {reward:15.2f} | Epsilon: {max(0.2, self.epsilon * 0.999):.3f} | Workers: {len(sorted_workers)}")
 
                                 # Store the experience in the replay memory for training.
                                 self.router_memory.push(state, action, next_state, reward, None)
