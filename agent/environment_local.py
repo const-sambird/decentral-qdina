@@ -205,7 +205,8 @@ class LocalIndexingEnv(gym.Env):
         # Storage reward: 1 if empty, 0 if full
         reward_s = max(0.0, (self.storage_budget - used_storage) / self.storage_budget)
 
-        reward = (self.alpha * reward_t) + (self.beta * reward_s)
+        # reward = (self.alpha * reward_t) + (self.beta * reward_s)
+        reward = self.alpha * reward_t
         print(f"[Worker {self.replica_id}] Perf Gain: {reward_t:.2f} | Storage Reward: {reward_s:.2f} | Total Reward: {reward:.2f} | Used Storage: {used_storage:.2f}/{self.storage_budget:.2f} | Active Indexes: {np.sum(self._current_indexes)}")
         terminated = False
         truncated = False
