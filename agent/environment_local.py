@@ -68,6 +68,7 @@ class LocalIndexingEnv(gym.Env):
                     cur.execute('SELECT hypopg_relation_size(%s);', (virtual_oid,))
                     size = cur.fetchone()[0]
                 except Exception:
+                    print(f"[Worker {self.replica_id}] Warning: Unable to get size for candidate {candidate}. Using default size.")
                     size = 5_000_000  
                 cur.execute('SELECT hypopg_drop_index(%s);' % virtual_oid)
                 conn.commit()
@@ -140,46 +141,39 @@ class LocalIndexingEnv(gym.Env):
         This version implements a hard storage budget constraint similar to the original qDINA:
         - Before adding an index, we check if the required space fits in the remaining budget.
         - If it does not fit, the action is rejected (state unchanged) and the episode terminates.
-        - The reward is penalized heavily in that case.
+        - The reward penalizes both performance loss and storage usage.
         - Index sizes are computed using HypoPG and cached for efficiency.
         """
         if queries is None:
             queries = []
-            
+
+        # Update workload state (number of queries per template)
         self._current_workload_state = np.zeros(self.n_templates, dtype=np.int32)
         for q_idx in range(len(queries)):
             if q_idx < len(self.templates):
                 t_id = self.templates[q_idx]
                 if 0 <= t_id < self.n_templates:
                     self._current_workload_state[t_id] += 1
-                    
-        tables_to_drop = getattr(self, 'tables', [])
-        self.db_replica.drop_all_indexes(tables_to_drop, 'cost')
-        self.initial_costs = self._estimate_workload_costs(queries)
 
+        # Clean existing virtual indexes before estimating baseline costs
         tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
-        
         if tables_to_clean:
             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
-            
+
+        # Baseline cost (without the current action)
         self.initial_costs = self._estimate_workload_costs(queries)
 
-        # --- Handle the action ---
+        # --- Execute action ---
         if self._current_indexes[action] == 0:
             # Attempting to add an index
             candidate = self.candidates[action]
             required_space = self._get_candidate_size(candidate)
-            # Check if adding this index would exceed the budget
             if self._spaces_used + required_space > self.storage_budget:
-                deficit = (self._spaces_used + required_space) - self.storage_budget
-                penalty = 50.0 * (deficit / self.storage_budget)
-                current_costs = self._estimate_workload_costs(queries)
-                perf_gain = sum(self.initial_costs) - sum(current_costs)
-                reward_t = perf_gain
-                used_storage = self._spaces_used
-                reward_s = max(0.0, (self.storage_budget - used_storage) / self.storage_budget)
-                reward = (self.alpha * reward_t) + (self.beta * reward_s)
-                terminated = False
+                # deficit = (self._spaces_used + required_space) - self.storage_budget
+                # penalty = 50.0 * (deficit / self.storage_budget)
+                # reward = -penalty   # penalty only
+                reward = 0.0
+                terminated = True
                 truncated = False
                 return self._current_workload_state, reward, terminated, truncated, {
                     'costs': self.initial_costs,
@@ -188,7 +182,6 @@ class LocalIndexingEnv(gym.Env):
                     'agent_mode': self.agent_type
                 }
             else:
-                # Add the index
                 self._current_indexes[action] = 1
                 self._spaces_used += required_space
         else:
@@ -197,21 +190,23 @@ class LocalIndexingEnv(gym.Env):
             size = self._get_candidate_size(candidate)
             self._current_indexes[action] = 0
             self._spaces_used -= size
-            
+
+        # Recalculate costs after modification
         if tables_to_clean:
             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
-            
         current_costs = self._estimate_workload_costs(queries)
-        
+
         used_storage = self._spaces_used
-        
+
+        # Performance reward (signed, can be negative)
         perf_gain = sum(self.initial_costs) - sum(current_costs)
-        reward_t = max(0.0, perf_gain)
-        # The storage reward is normalized by the budget to keep it in a reasonable range
+        reward_t = perf_gain
+
+        # Storage reward: 1 if empty, 0 if full
         reward_s = max(0.0, (self.storage_budget - used_storage) / self.storage_budget)
-        
+
         reward = (self.alpha * reward_t) + (self.beta * reward_s)
-        
+
         terminated = False
         truncated = False
         return self._current_workload_state, reward, terminated, truncated, {

@@ -18,6 +18,9 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         '''
         gRPC Server Servicer coordinating decentralized worker nodes.
         '''
+        self.n_templates = n_templates
+        self.n_replicas = n_replicas
+        
         self.env = GlobalRoutingEnv(n_templates=n_templates, n_replicas=n_replicas)
         self.agent = RouterAgent(n_templates=n_templates, n_replicas=n_replicas, n_actions=self.env.n_actions)
 
@@ -81,6 +84,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
 
             worker_id = request.replica_id
+            self.last_valid_total_cost = {}
+            self.last_valid_template_costs = {} 
 
             # Lock the condition variable to safely modify shared state.
             with self.lock:
@@ -89,13 +94,23 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 if worker_id in self.registered_workers:
                     self.registered_workers[worker_id]['last_seen'] = time.time()
 
+                if request.local_reset:
+                    total_cost = self.last_valid_total_cost.get(worker_id, 0.0)
+                    costs = self.last_valid_template_costs.get(worker_id, [0.0]*self.n_templates)
+                else:
+                    total_cost = request.total_cost
+                    costs = list(request.costs)
+                    self.last_valid_total_cost[worker_id] = total_cost
+                    self.last_valid_template_costs[worker_id] = costs
+
                 # Store the metrics that this worker sent for the current step.
                 self.collected_metrics[worker_id] = {
                     'step': self.global_step_counter,
-                    'total_cost': request.total_cost,
-                    'costs': list(request.costs),
+                    'total_cost': total_cost,
+                    'costs': costs,
                     'storage_used': request.storage_used,
-                    'indexes': list(request.active_indexes)
+                    'indexes': list(request.active_indexes),
+                    'local_reset': request.local_reset
                 }
 
                 # Remember which step we are currently waiting for.

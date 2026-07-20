@@ -28,6 +28,7 @@ message LocalMetrics {
     repeated double costs = 3;     // Individual query template costs
     double storage_used = 4;       // Simulated index storage overhead
     repeated string active_indexes = 5;
+    bool local_reset = 6;
 }
 
 message WorkloadSlice {
