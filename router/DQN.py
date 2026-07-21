@@ -9,8 +9,8 @@ class DQN(nn.Module):
         modules = []
         modules.append(nn.Flatten())
         modules.append(nn.Linear(n_observations, layer_features[0]))
-        modules.append(nn.ReLU())\
-        
+        modules.append(nn.ReLU())
+
         for i in range(1, len(layer_features)):
             modules.append(nn.Linear(layer_features[i-1], layer_features[i]))
             modules.append(nn.ReLU())
@@ -18,6 +18,14 @@ class DQN(nn.Module):
         modules.append(nn.Linear(layer_features[-1], n_actions))
         
         self.network = nn.Sequential(*modules)
-    
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=0.5)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
     def forward(self, x):
         return self.network(x)

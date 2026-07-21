@@ -199,8 +199,13 @@ class LocalIndexingEnv(gym.Env):
         used_storage = self._spaces_used
 
         # Performance reward (signed, can be negative)
-        perf_gain = sum(self.initial_costs) - sum(current_costs)
-        reward_t = perf_gain
+        initial_total = sum(self.initial_costs)
+        current_total = sum(current_costs)
+
+        if initial_total > 0 and current_total > 0:
+            reward_t = np.log(initial_total / current_total)
+        else:
+            reward_t = 0.0
 
         # Storage reward: 1 if empty, 0 if full
         reward_s = max(0.0, (self.storage_budget - used_storage) / self.storage_budget)

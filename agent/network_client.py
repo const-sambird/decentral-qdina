@@ -50,14 +50,17 @@ class QDinaNetworkClient:
         self.optimizer = None
         self.loss_fn = nn.MSELoss()
         
-        self.local_memory = ReplayMemory(capacity=1000)
+        self.local_memory = ReplayMemory(capacity=2000)
         self.batch_size = 16
         self.gamma = 0.99
         self.epsilon = 1.0
         self.epsilon_min = 0.05
-        self.epsilon_decay = 0.99
+        self.epsilon_decay = 0.995
         
         self.env = None
+
+        self._step_counter = 0
+        self.target_update_freq = 10
 
     def register_to_master(self, local_hostname: str = '127.0.0.1', local_port: int = 5432):
         try:
@@ -151,9 +154,10 @@ class QDinaNetworkClient:
             torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
             self.optimizer.step()
             
-            if random.random() < 0.1:
+            self._step_counter += 1
+            if self._step_counter % self.target_update_freq == 0:
                 self.target_net.load_state_dict(self.policy_net.state_dict())
-                
+                            
         elif self.agent_mode == 'quantum':
             def closure():
                 policy_outputs = self.policy_net(state_b).view(current_batch_size, -1)
@@ -331,7 +335,7 @@ class QDinaNetworkClient:
                 print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.2f}")
 
                 if not response.stop_training:
-                    self.epsilon = max(0.3, self.epsilon * 0.999)
+                    self.epsilon = max(0.05, self.epsilon * 0.995)
 
             except grpc.RpcError as e:
                 print(f"[Worker Client {self.replica_id}] Connection lost with master router. Retrying in 5 seconds... ({e.code()})")
