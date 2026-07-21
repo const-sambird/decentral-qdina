@@ -34,8 +34,12 @@ class LocalIndexingEnv(gym.Env):
         self.n_actions = len(self.candidates)
         self.action_space = gym.spaces.Discrete(self.n_actions)
         
-        self.observation_space = gym.spaces.Box(low=0, high=1000, shape=(self.n_templates,), dtype=np.int32)
-        
+        self.observation_space = gym.spaces.Box(
+            low=0, high=1000,
+            shape=(self.n_templates + self.n_actions,),
+            dtype=np.float32
+        )
+
         self._current_indexes = np.zeros(self.n_actions)
         self._current_workload_state = np.zeros(self.n_templates, dtype=np.int32)
         
@@ -118,7 +122,6 @@ class LocalIndexingEnv(gym.Env):
         
         self._current_indexes = np.zeros(self.n_actions)
         self._spaces_used = 0.0
-        # Keep the size cache (it may be reused across episodes)
         
         incoming_queries = []
         if options and 'queries' in options:
@@ -133,7 +136,7 @@ class LocalIndexingEnv(gym.Env):
                     
         self.initial_costs = self._estimate_workload_costs(incoming_queries)
         
-        return self._current_workload_state, {'agent_mode': self.agent_type}
+        return self._get_obs(), {'agent_mode': self.agent_type}
         
     def step(self, action: int, queries=None):
         """
@@ -147,7 +150,6 @@ class LocalIndexingEnv(gym.Env):
         if queries is None:
             queries = []
 
-        # Update workload state (number of queries per template)
         self._current_workload_state = np.zeros(self.n_templates, dtype=np.int32)
         for q_idx in range(len(queries)):
             if q_idx < len(self.templates):
@@ -155,27 +157,20 @@ class LocalIndexingEnv(gym.Env):
                 if 0 <= t_id < self.n_templates:
                     self._current_workload_state[t_id] += 1
 
-        # Clean existing virtual indexes before estimating baseline costs
         tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
         if tables_to_clean:
             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
 
-        # Baseline cost (without the current action)
         self.initial_costs = self._estimate_workload_costs(queries)
 
-        # --- Execute action ---
         if self._current_indexes[action] == 0:
-            # Attempting to add an index
             candidate = self.candidates[action]
             required_space = self._get_candidate_size(candidate)
             if self._spaces_used + required_space > self.storage_budget:
-                # deficit = (self._spaces_used + required_space) - self.storage_budget
-                # penalty = 50.0 * (deficit / self.storage_budget)
-                # reward = -penalty   # penalty only
                 reward = 0.0
                 terminated = True
                 truncated = False
-                return self._current_workload_state, reward, terminated, truncated, {
+                return self._get_obs(), reward, terminated, truncated, {
                     'costs': self.initial_costs,
                     'total_cost': sum(self.initial_costs),
                     'storage': self._spaces_used,
@@ -185,20 +180,17 @@ class LocalIndexingEnv(gym.Env):
                 self._current_indexes[action] = 1
                 self._spaces_used += required_space
         else:
-            # Dropping an index
             candidate = self.candidates[action]
             size = self._get_candidate_size(candidate)
             self._current_indexes[action] = 0
             self._spaces_used -= size
 
-        # Recalculate costs after modification
         if tables_to_clean:
             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
         current_costs = self._estimate_workload_costs(queries)
 
         used_storage = self._spaces_used
 
-        # Performance reward (signed, can be negative)
         initial_total = sum(self.initial_costs)
         current_total = sum(current_costs)
 
@@ -207,15 +199,12 @@ class LocalIndexingEnv(gym.Env):
         else:
             reward_t = 0.0
 
-        # Storage reward: 1 if empty, 0 if full
         reward_s = max(0.0, (self.storage_budget - used_storage) / self.storage_budget)
-
         reward = (self.alpha * reward_t) + (self.beta * reward_s)
-        # reward = self.alpha * reward_t
-        # print(f"[Worker {self.replica_id}] Perf Gain: {reward_t:.2f} | Storage Reward: {reward_s:.2f} | Total Reward: {reward:.2f} | Used Storage: {used_storage:.2f}/{self.storage_budget:.2f} | Active Indexes: {np.sum(self._current_indexes)}")
+
         terminated = False
         truncated = False
-        return self._current_workload_state, reward, terminated, truncated, {
+        return self._get_obs(), reward, terminated, truncated, {
             'costs': current_costs,
             'total_cost': sum(current_costs),
             'storage': used_storage,
@@ -223,7 +212,10 @@ class LocalIndexingEnv(gym.Env):
         }
     
     def _get_obs(self):
-        return self._current_workload_state.copy()
+        return np.concatenate([
+            self._current_workload_state.astype(np.float32),
+            self._current_indexes.astype(np.float32)
+        ])
     
     def get_active_index_names(self):
         """

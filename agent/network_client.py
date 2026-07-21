@@ -76,11 +76,13 @@ class QDinaNetworkClient:
             print(f"[Worker Client {self.replica_id}] Critical failure during registration step: {e.details()}")
             return False
 
+
     def _init_agent_networks(self):
         n_actions = self.env.action_space.n
+        n_observations = self.n_templates + self.env.n_actions
         if self.agent_mode == 'classical':
-            self.policy_net = DQN(n_observations=self.n_templates, n_actions=n_actions, layer_features=[128, 128])
-            self.target_net = DQN(n_observations=self.n_templates, n_actions=n_actions, layer_features=[128, 128])
+            self.policy_net = DQN(n_observations, n_actions, layer_features=[128, 128])
+            self.target_net = DQN(n_observations, n_actions, layer_features=[128, 128])
             self.target_net.load_state_dict(self.policy_net.state_dict())
             self.target_net.eval()
             self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-3)
@@ -109,22 +111,24 @@ class QDinaNetworkClient:
         transitions = self.local_memory.sample(self.batch_size)
         states, actions, rewards, next_states, dones = zip(*transitions)
         
+        expected_size = self.n_templates + self.env.n_actions  # taille correcte
+        
         fixed_states = []
         for s in states:
             s_np = np.asarray(s, dtype=np.float32).flatten()
-            if len(s_np) < self.n_templates:
-                s_np = np.pad(s_np, (0, self.n_templates - len(s_np)), 'constant')
+            if len(s_np) < expected_size:
+                s_np = np.pad(s_np, (0, expected_size - len(s_np)), 'constant')
             else:
-                s_np = s_np[:self.n_templates]
+                s_np = s_np[:expected_size]
             fixed_states.append(torch.tensor(s_np, dtype=torch.float32))
 
         fixed_next_states = []
         for ns in next_states:
             ns_np = np.asarray(ns, dtype=np.float32).flatten()
-            if len(ns_np) < self.n_templates:
-                ns_np = np.pad(ns_np, (0, self.n_templates - len(ns_np)), 'constant')
+            if len(ns_np) < expected_size:
+                ns_np = np.pad(ns_np, (0, expected_size - len(ns_np)), 'constant')
             else:
-                ns_np = ns_np[:self.n_templates]
+                ns_np = ns_np[:expected_size]
             fixed_next_states.append(torch.tensor(ns_np, dtype=torch.float32))
 
         state_b = torch.stack(fixed_states)
