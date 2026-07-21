@@ -240,14 +240,32 @@ class QDinaNetworkClient:
                 response = self.stub.SubmitMetricsAndGetWorkload(metrics)
                 
                 if response.stop_training:
-                    print(f"[Worker Client {self.replica_id}] Master broadcasted stop_training signal. Synchronizing local episode boundary.")
+                    print(f"[Worker Client {self.replica_id}] Master broadcasted stop_training signal. Resetting local environment and acknowledging...")
+
                     local_state, _ = self.env.reset()
                     self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
                     current_cost_tracker = 0.0
                     current_storage_usage = 0.0
                     costs_per_template = [0.0] * self.n_templates
-                    time.sleep(0.5)
-                    continue
+
+
+                    ack_metrics = qdina_pb2.LocalMetrics(
+                        replica_id=self.replica_id,
+                        total_cost=current_cost_tracker,
+                        costs=costs_per_template,
+                        storage_used=current_storage_usage,
+                        active_indexes=self.env.get_active_index_names(),
+                        local_reset=True
+                    )
+
+                    while True:
+                        ack_response = self.stub.SubmitMetricsAndGetWorkload(ack_metrics)
+                        if not ack_response.stop_training:
+
+                            response = ack_response
+                            break
+                        else:
+                            time.sleep(0.2)
                 
                 current_queries = list(response.queries)
                 if not current_queries:

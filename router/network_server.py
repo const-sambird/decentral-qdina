@@ -56,6 +56,13 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.steps_per_episode = 20
         self.step_computed = False 
 
+        # For tracking episode reset acknowledgments
+        self.episode_reset_acks = set()
+
+        # For storing the last valid costs per worker (used after local reset)
+        self.last_valid_total_cost = {}
+        self.last_valid_template_costs = {}
+
     def RegisterWorker(self, request, context):
         with self.lock:
             worker_id = request.replica_id
@@ -69,12 +76,12 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
     def SubmitMetricsAndGetWorkload(self, request, context):
         """
-        This method is called by each worker to send its local metrics and receive
-        its assigned queries for the next step. The router waits for ALL workers to
-        submit before computing the next routing decision and slicing the workload.
+        Called by each worker to send local metrics and receive the assigned queries
+        for the next step. The router waits for ALL workers to submit before computing
+        the next routing decision and slicing the workload.
 
         Returns:
-            WorkloadSlice: a protobuf message containing the queries for this worker, 
+            WorkloadSlice: a protobuf message containing the queries for this worker,
             or a stop signal to end the episode.
         """
         try:
@@ -84,8 +91,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
 
             worker_id = request.replica_id
-            self.last_valid_total_cost = {}
-            self.last_valid_template_costs = {} 
 
             # Lock the condition variable to safely modify shared state.
             with self.lock:
@@ -94,7 +99,47 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 if worker_id in self.registered_workers:
                     self.registered_workers[worker_id]['last_seen'] = time.time()
 
+                # --------------------------------------------------------------------
+                # PHASE 1: EPISODE END – WAIT FOR RESET ACKNOWLEDGMENTS
+                # --------------------------------------------------------------------
+                if self.stop_training_signal:
+                    # Only accept messages with local_reset=True; others are ignored.
+                    if request.local_reset:
+                        self.episode_reset_acks.add(worker_id)
+                        print(f"[Server] Worker {worker_id} acknowledged episode reset. "
+                              f"({len(self.episode_reset_acks)}/{len(self.registered_workers)})")
+                    else:
+                        # Normal metrics during stop signal are ignored – we force a reset.
+                        # Return stop_training=True to make the worker send a reset ack.
+                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
+
+                    # Check if all workers have acknowledged the reset.
+                    if len(self.episode_reset_acks) >= len(self.registered_workers):
+                        print("[Server] All workers acknowledged reset. Starting next episode.")
+                        self.stop_training_signal = False
+                        self.episode_reset_acks.clear()
+                        # Reset collected metrics for the new episode.
+                        self.collected_metrics.clear()
+                        # Precompute the new workload slices for all workers.
+                        self.next_workload_slices = {
+                            w_id: self._get_routed_slice_for_node(w_id)
+                            for w_id in self.registered_workers.keys()
+                        }
+                        # Return the new workload with stop_training=False.
+                        return qdina_pb2.WorkloadSlice(
+                            stop_training=False,
+                            queries=self.next_workload_slices.get(worker_id, [])
+                        )
+                    else:
+                        # Not all workers have reset yet; keep waiting.
+                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
+
+                # --------------------------------------------------------------------
+                # PHASE 2: NORMAL STEP – COLLECT METRICS AND COMPUTE ROUTING
+                # --------------------------------------------------------------------
+                # Store the metrics that this worker sent for the current step.
                 if request.local_reset:
+                    # A local reset (budget exceeded) occurred; reuse the last valid costs.
                     total_cost = self.last_valid_total_cost.get(worker_id, 0.0)
                     costs = self.last_valid_template_costs.get(worker_id, [0.0]*self.n_templates)
                 else:
@@ -103,7 +148,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     self.last_valid_total_cost[worker_id] = total_cost
                     self.last_valid_template_costs[worker_id] = costs
 
-                # Store the metrics that this worker sent for the current step.
                 self.collected_metrics[worker_id] = {
                     'step': self.global_step_counter,
                     'total_cost': total_cost,
@@ -113,25 +157,12 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     'local_reset': request.local_reset
                 }
 
-                # Remember which step we are currently waiting for.
                 target_step = self.global_step_counter
 
                 # Synchronization barrier: wait until the step advances or we receive
                 # a stop signal. We cannot move forward until all workers have submitted.
                 while self.global_step_counter == target_step:
-                    # If the router has signaled the end of the episode, we still need
-                    # to wait for all workers to finish the current step.
-                    if self.stop_training_signal:
-                        # If all workers have submitted, break to return the stop signal.
-                        if len(self.collected_metrics) >= len(self.registered_workers):
-                            break
-                        else:
-                            # Otherwise, wait for the remaining workers.
-                            self.lock.wait()
-                            continue
-
-                    # Check for workers that have not sent any request for more than
-                    # 10 seconds. Remove them to avoid infinite waiting.
+                    # Remove workers that have not sent any request for more than 10 seconds.
                     now = time.time()
                     dead_workers = [wid for wid, info in self.registered_workers.items()
                                     if now - info['last_seen'] > 10.0]
@@ -139,33 +170,35 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         del self.registered_workers[wid]
                         self.collected_metrics.pop(wid, None)
                     if dead_workers:
-                        # Wake up all threads to recalculate the number of active workers.
                         self.lock.notify_all()
                         continue
 
-                    # If all currently registered workers have submitted, we can
-                    # proceed with the step computation.
+                    # If all currently registered workers have submitted, proceed.
                     if len(self.collected_metrics) >= len(self.registered_workers):
                         # Ensure only one worker executes the computation (the leader).
                         if not self.step_computed:
                             self.step_computed = True
                             try:
                                 # --- Leader computes the next routing decision ---
-                                # Gather the total costs from all workers.
+                                # Gather total costs from all workers.
                                 sorted_workers = sorted(self.collected_metrics.keys())
-                                costs_array = np.array([self.collected_metrics[w_id]['total_cost'] for w_id in sorted_workers], dtype=np.float64)
-                                # Sum template-level costs across workers to get global costs.
-                                all_template_costs = [self.collected_metrics[w_id]['costs'] for w_id in sorted_workers]
+                                costs_array = np.array(
+                                    [self.collected_metrics[w_id]['total_cost'] for w_id in sorted_workers],
+                                    dtype=np.float64
+                                )
+                                # Sum template-level costs across workers.
+                                all_template_costs = [
+                                    self.collected_metrics[w_id]['costs'] for w_id in sorted_workers
+                                ]
                                 template_costs_array = np.sum(all_template_costs, axis=0)
 
-                                # Get the current state from the global environment.
+                                # Get current state from the global environment.
                                 state = self.env._get_obs()
                                 # Choose an action (exploration vs exploitation) using the agent.
                                 action = self.agent.select_action(state, self.epsilon)
                                 # Apply the action and update the environment with the costs.
                                 next_state, reward, _, _, info = self.env.step(
                                     action,
-                                    # external_costs=np.clip(costs_array, 0, 1e9),
                                     external_costs=costs_array,
                                     external_template_costs=template_costs_array
                                 )
@@ -183,12 +216,17 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 # Log the current routing table and performance metrics.
                                 table_str = " ".join(str(int(node)) for node in self.routing_table_state)
                                 print(f"[Router State] Table : [{table_str}]")
-                                print(f"[Router Learn] Step {self.global_step_counter:2d} | Makespan: {float(np.max(costs_array)):14.2f} | Jain Index: {info.get('jain_index', 1.0):.4f} | Reward: {reward:15.2f} | Epsilon: {max(0.2, self.epsilon * 0.999):.3f} | Workers: {len(sorted_workers)}")
+                                print(f"[Router Learn] Step {self.global_step_counter:2d} | "
+                                      f"Makespan: {float(np.max(costs_array)):14.2f} | "
+                                      f"Jain Index: {info.get('jain_index', 1.0):.4f} | "
+                                      f"Reward: {reward:15.2f} | "
+                                      f"Epsilon: {max(0.2, self.epsilon * 0.999):.3f} | "
+                                      f"Workers: {len(sorted_workers)}")
 
                                 # Store the experience in the replay memory for training.
                                 self.router_memory.push(state, action, next_state, reward, None)
 
-                                # If we have enough experiences, perform a learning step to update the agent's policy.
+                                # If we have enough experiences, perform a learning step.
                                 if len(self.router_memory) >= self.batch_size:
                                     self.agent.learn(self.router_memory, self.batch_size)
                                     self.agent.soft_update()
@@ -218,15 +256,15 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         # Not all workers have submitted yet; wait for more.
                         self.lock.wait()
 
-                # After exiting the loop, if the stop signal is active, tell the worker to stop.
+                # After the loop, if the stop signal is active, tell the worker to stop.
                 if self.stop_training_signal:
-                    # Clear any pending workload slices to avoid sending queries.
-                    self.next_workload_slices = {}
                     return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
 
-                # Retrieve the queries assigned to this specific worker for the next step.
-                sliced_queries = self.next_workload_slices.get(worker_id, [])
-                return qdina_pb2.WorkloadSlice(stop_training=False, queries=sliced_queries)
+                # Otherwise, return the queries assigned to this specific worker.
+                return qdina_pb2.WorkloadSlice(
+                    stop_training=False,
+                    queries=self.next_workload_slices.get(worker_id, [])
+                )
 
         except Exception as e:
             # Catch any unexpected error and force a stop to avoid hanging workers.

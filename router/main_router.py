@@ -133,9 +133,16 @@ if __name__ == '__main__':
             print(f"[Master Orchestrator] Global Episode {episode + 1} Done. Broadcasting stop_training signal.")
             with servicer.lock:
                 servicer.stop_training_signal = True
-            
-            time.sleep(2.0)
-            
+
+            # Wait for all workers to acknowledge the episode reset before proceeding
+            print("[Master Orchestrator] Waiting for all workers to acknowledge episode reset...")
+            while True:
+                with servicer.lock:
+                    if not servicer.stop_training_signal:
+                        break
+                time.sleep(0.1)
+            print("[Master Orchestrator] All workers have reset. Proceeding to next episode.")
+                        
             servicer.agent.target_net.load_state_dict(servicer.agent.policy_net.state_dict())
             
             servicer.export_benchmark_files(output_dir=".")
