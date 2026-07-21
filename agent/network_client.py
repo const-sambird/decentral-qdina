@@ -50,17 +50,17 @@ class QDinaNetworkClient:
         self.optimizer = None
         self.loss_fn = nn.MSELoss()
         
-        self.local_memory = ReplayMemory(capacity=2000)
+        self.local_memory = ReplayMemory(capacity=10000)
         self.batch_size = 16
         self.gamma = 0.99
         self.epsilon = 1.0
-        self.epsilon_min = 0.05
-        self.epsilon_decay = 0.999
+        self.epsilon_min = 0.3
+        self.epsilon_decay = 0.9995
         
         self.env = None
 
         self._step_counter = 0
-        self.target_update_freq = 10
+        self.target_update_freq = 5
 
     def register_to_master(self, local_hostname: str = '127.0.0.1', local_port: int = 5432):
         try:
@@ -79,8 +79,8 @@ class QDinaNetworkClient:
     def _init_agent_networks(self):
         n_actions = self.env.action_space.n
         if self.agent_mode == 'classical':
-            self.policy_net = DQN(n_observations=self.n_templates, n_actions=n_actions, layer_features=[64, 64])
-            self.target_net = DQN(n_observations=self.n_templates, n_actions=n_actions, layer_features=[64, 64])
+            self.policy_net = DQN(n_observations=self.n_templates, n_actions=n_actions, layer_features=[128, 128])
+            self.target_net = DQN(n_observations=self.n_templates, n_actions=n_actions, layer_features=[128, 128])
             self.target_net.load_state_dict(self.policy_net.state_dict())
             self.target_net.eval()
             self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-3)

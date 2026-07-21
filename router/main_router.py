@@ -60,6 +60,8 @@ if __name__ == '__main__':
     print(f"[Master Orchestrator] Invoking query_loader.load_training_set_queries on {args.workload_dir}...")
     # Load all queries and their template mapping for the initial workload
     initial_queries, initial_map = load_training_set_queries(args.workload_dir, fraction=1.0)
+    n_templates = 22
+    initial_map = [t % n_templates for t in initial_map]
     
     # Initialize the WorkloadManager with the loaded queries and mapping
     workload_mgr = WorkloadManager(initial_queries, initial_map, execution_mode=args.mode, fraction=1.0)
@@ -99,8 +101,8 @@ if __name__ == '__main__':
         
         steps_per_episode = 100
         epsilon_start = 1.0
-        epsilon_min = 0.20
-        decay_rate = 0.95
+        epsilon_min = 0.30
+        decay_rate = 0.995
         
         for episode in range(args.episodes):
             print(f"\n--- [Master Orchestrator] Starting Global Episode {episode + 1}/{args.episodes} ---")
