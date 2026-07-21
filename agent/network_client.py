@@ -60,7 +60,7 @@ class QDinaNetworkClient:
         self.env = None
 
         self._step_counter = 0
-        self.target_update_freq = 5
+        self.target_update_freq = 10
 
     def register_to_master(self, local_hostname: str = '127.0.0.1', local_port: int = 5432):
         try:
@@ -81,8 +81,8 @@ class QDinaNetworkClient:
         n_actions = self.env.action_space.n
         n_observations = self.n_templates + self.env.n_actions
         if self.agent_mode == 'classical':
-            self.policy_net = DQN(n_observations, n_actions, layer_features=[128, 128])
-            self.target_net = DQN(n_observations, n_actions, layer_features=[128, 128])
+            self.policy_net = DQN(n_observations, n_actions, layer_features=[256, 128, 64])
+            self.target_net = DQN(n_observations, n_actions, layer_features=[256, 128, 64])
             self.target_net.load_state_dict(self.policy_net.state_dict())
             self.target_net.eval()
             self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-3)
@@ -309,10 +309,7 @@ class QDinaNetworkClient:
                 else:
                     costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
                 
-                if current_storage_usage > 1_000_000_000:
-                    storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
-                else:
-                    storage_str = f"{current_storage_usage / 1_000_000:.2f} MB"
+                storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
                 print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.2f}")
 
                 if not response.stop_training:
