@@ -136,6 +136,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                             w_id: self._get_routed_slice_for_node(w_id)
                             for w_id in self.registered_workers.keys()
                         }
+                        
+                        print(f"[DEBUG] Next slices sizes: { {w: len(self.next_workload_slices.get(w, [])) for w in self.registered_workers} }")
                         return qdina_pb2.WorkloadSlice(
                             stop_training=False,
                             queries=self.next_workload_slices.get(worker_id, [])
@@ -282,9 +284,11 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         if hasattr(self, 'execution_mode') and self.execution_mode == 'uniform':
             sliced_queries = []
             replica_index = node_id - 1
+            print(f"[DEBUG] Uniform mode: node_id={node_id}, replica_index={replica_index}, total queries={len(self.current_workload_pool)}")
             for idx, q_text in enumerate(self.current_workload_pool):
                 if idx % self.env.n_replicas == replica_index:
                     sliced_queries.append(q_text)
+            print(f"[DEBUG] Assigned {len(sliced_queries)} queries to node {node_id}")
             return sliced_queries
         else:
             sorted_workers = sorted(self.registered_workers.keys())
@@ -293,12 +297,14 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             except ValueError:
                 internal_id = node_id - 1
             sliced_queries = []
+            print(f"[DEBUG] Drift mode: node_id={node_id}, internal_id={internal_id}, total queries={len(self.current_workload_pool)}")
             for idx, q_text in enumerate(self.current_workload_pool):
                 template_id = self.workload_templates_map[idx]
                 if template_id < len(self.routing_table_state):
                     assigned_node = self.routing_table_state[template_id]
                     if assigned_node == internal_id:
                         sliced_queries.append(q_text)
+            print(f"[DEBUG] Assigned {len(sliced_queries)} queries to node {node_id}")
             return sliced_queries
         
     def export_benchmark_files(self, output_dir="./output/"):
