@@ -77,7 +77,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
     def SubmitMetricsAndGetWorkload(self, request, context):
         """
         Called by each worker to send local metrics and receive the assigned queries
-        for the next step. The router waits for ALL workers to submit before computing
+        for the next step. The router waits for all workers to submit before computing
         the next routing decision and slicing the workload.
 
         Returns:
@@ -99,18 +99,31 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 if worker_id in self.registered_workers:
                     self.registered_workers[worker_id]['last_seen'] = time.time()
 
-                # --------------------------------------------------------------------
-                # PHASE 1: EPISODE END – WAIT FOR RESET ACKNOWLEDGMENTS
-                # --------------------------------------------------------------------
+                # Phase 1: episode end – wait for reset acknowledgments
                 if self.stop_training_signal:
+                    # Remove dead workers that haven't sent any request for more than 10 seconds.
+                    now = time.time()
+                    dead_workers = [wid for wid, info in self.registered_workers.items()
+                                    if now - info['last_seen'] > 10.0]
+                    for wid in dead_workers:
+                        del self.registered_workers[wid]
+                        self.episode_reset_acks.discard(wid)
+                        self.collected_metrics.pop(wid, None)
+                    if dead_workers:
+                        print(f"[Server] Removed dead workers during reset: {dead_workers}")
+                        # If all workers died, reset the episode state and continue
+                        if len(self.registered_workers) == 0:
+                            self.stop_training_signal = False
+                            self.episode_reset_acks.clear()
+                            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
+
                     # Only accept messages with local_reset=True; others are ignored.
                     if request.local_reset:
                         self.episode_reset_acks.add(worker_id)
                         print(f"[Server] Worker {worker_id} acknowledged episode reset. "
-                              f"({len(self.episode_reset_acks)}/{len(self.registered_workers)})")
+                            f"({len(self.episode_reset_acks)}/{len(self.registered_workers)})")
                     else:
                         # Normal metrics during stop signal are ignored – we force a reset.
-                        # Return stop_training=True to make the worker send a reset ack.
                         return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
 
                     # Check if all workers have acknowledged the reset.
@@ -118,14 +131,11 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         print("[Server] All workers acknowledged reset. Starting next episode.")
                         self.stop_training_signal = False
                         self.episode_reset_acks.clear()
-                        # Reset collected metrics for the new episode.
                         self.collected_metrics.clear()
-                        # Precompute the new workload slices for all workers.
                         self.next_workload_slices = {
                             w_id: self._get_routed_slice_for_node(w_id)
                             for w_id in self.registered_workers.keys()
                         }
-                        # Return the new workload with stop_training=False.
                         return qdina_pb2.WorkloadSlice(
                             stop_training=False,
                             queries=self.next_workload_slices.get(worker_id, [])
@@ -134,9 +144,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         # Not all workers have reset yet; keep waiting.
                         return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
 
-                # --------------------------------------------------------------------
-                # PHASE 2: NORMAL STEP – COLLECT METRICS AND COMPUTE ROUTING
-                # --------------------------------------------------------------------
                 # Store the metrics that this worker sent for the current step.
                 if request.local_reset:
                     # A local reset (budget exceeded) occurred; reuse the last valid costs.
@@ -179,7 +186,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         if not self.step_computed:
                             self.step_computed = True
                             try:
-                                # --- Leader computes the next routing decision ---
+                                # Leader computes the next routing decision
                                 # Gather total costs from all workers.
                                 sorted_workers = sorted(self.collected_metrics.keys())
                                 costs_array = np.array(
@@ -217,11 +224,11 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 table_str = " ".join(str(int(node)) for node in self.routing_table_state)
                                 print(f"[Router State] Table : [{table_str}]")
                                 print(f"[Router Learn] Step {self.global_step_counter:2d} | "
-                                      f"Makespan: {float(np.max(costs_array)):14.2f} | "
-                                      f"Jain Index: {info.get('jain_index', 1.0):.4f} | "
-                                      f"Reward: {reward:15.2f} | "
-                                      f"Epsilon: {max(0.2, self.epsilon * 0.999):.3f} | "
-                                      f"Workers: {len(sorted_workers)}")
+                                    f"Makespan: {float(np.max(costs_array)):14.2f} | "
+                                    f"Jain Index: {info.get('jain_index', 1.0):.4f} | "
+                                    f"Reward: {reward:15.2f} | "
+                                    f"Epsilon: {max(0.2, self.epsilon * 0.999):.3f} | "
+                                    f"Workers: {len(sorted_workers)}")
 
                                 # Store the experience in the replay memory for training.
                                 self.router_memory.push(state, action, next_state, reward, None)
