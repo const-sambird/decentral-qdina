@@ -244,8 +244,8 @@ class QDinaNetworkClient:
                 response = self.stub.SubmitMetricsAndGetWorkload(metrics)
                 
                 if response.stop_training:
-                    response, local_state, current_cost_tracker, current_storage_usage, costs_per_template = self._handle_stop_training()
-
+                    # response, local_state, current_cost_tracker, current_storage_usage, costs_per_template = self._handle_stop_training()
+                    pass
                 
                 current_queries = list(response.queries)
                 if not current_queries:
@@ -282,9 +282,9 @@ class QDinaNetworkClient:
                         local_reset=True
                     )
                     response = self.stub.SubmitMetricsAndGetWorkload(metrics)
-                    if response.stop_training:
-                        response, local_state, current_cost_tracker, current_storage_usage, costs_per_template = self._handle_stop_training()
-                        continue
+                    # if response.stop_training:
+                    #     response, local_state, current_cost_tracker, current_storage_usage, costs_per_template = self._handle_stop_training()
+                    #     continue
                     
                     local_state, _ = self.env.reset()
                     current_cost_tracker = 0.0
