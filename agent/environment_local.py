@@ -169,11 +169,11 @@ class LocalIndexingEnv(gym.Env):
             candidate = self.candidates[action]
             required_space = self._get_candidate_size(candidate)
             if self._spaces_used + required_space > self.storage_budget:
-                deficit = (self._spaces_used + required_space) - self.storage_budget
-                penalty = 50.0 * (deficit / self.storage_budget)
-                reward = -penalty   # penalty only
-                # reward = 0.0
-                terminated = False
+                # deficit = (self._spaces_used + required_space) - self.storage_budget
+                # penalty = 50.0 * (deficit / self.storage_budget)
+                # reward = -penalty   # penalty only
+                reward = 0.0
+                terminated = True
                 truncated = False
                 return self._current_workload_state, reward, terminated, truncated, {
                     'costs': self.initial_costs,
