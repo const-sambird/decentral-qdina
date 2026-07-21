@@ -289,24 +289,24 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             internal_id = len(sorted_workers)  # fallback
         if hasattr(self, 'execution_mode') and self.execution_mode == 'uniform':
             sliced_queries = []
-            print(f"[DEBUG] Uniform mode: node_id={node_id}, internal_id={internal_id}, total queries={len(self.current_workload_pool)}")
+            # print(f"[DEBUG] Uniform mode: node_id={node_id}, internal_id={internal_id}, total queries={len(self.current_workload_pool)}")
             for idx, q_text in enumerate(self.current_workload_pool):
                 if idx % self.env.n_replicas == internal_id:
                     sliced_queries.append(q_text)
-            print(f"[DEBUG] Assigned {len(sliced_queries)} queries to node {node_id}")
+            # print(f"[DEBUG] Assigned {len(sliced_queries)} queries to node {node_id}")
             return sliced_queries
         else:
             sliced_queries = []
-            print(f"[DEBUG] Drift mode: node_id={node_id}, internal_id={internal_id}, total queries={len(self.current_workload_pool)}")
+            # print(f"[DEBUG] Drift mode: node_id={node_id}, internal_id={internal_id}, total queries={len(self.current_workload_pool)}")
             for idx, q_text in enumerate(self.current_workload_pool):
                 template_id = self.workload_templates_map[idx]
                 if template_id < len(self.routing_table_state):
                     assigned_node = self.routing_table_state[template_id]
                     if assigned_node == internal_id:
                         sliced_queries.append(q_text)
-            print(f"[DEBUG] Assigned {len(sliced_queries)} queries to node {node_id}")
+            # print(f"[DEBUG] Assigned {len(sliced_queries)} queries to node {node_id}")
             return sliced_queries
-        
+
     def export_benchmark_files(self, output_dir="./output/"):
         """
         Export the routing table and index configuration to CSV files for the benchmark.

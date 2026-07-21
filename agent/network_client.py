@@ -244,33 +244,8 @@ class QDinaNetworkClient:
                 response = self.stub.SubmitMetricsAndGetWorkload(metrics)
                 
                 if response.stop_training:
-                    print(f"[Worker Client {self.replica_id}] Master broadcasted stop_training signal. Resetting local environment and acknowledging...")
+                    response, local_state, current_cost_tracker, current_storage_usage, costs_per_template = self._handle_stop_training()
 
-                    active_indexes = self.env.get_active_index_names()
-
-                    local_state, _ = self.env.reset()
-                    self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-                    current_cost_tracker = 0.0
-                    current_storage_usage = 0.0
-                    costs_per_template = [0.0] * self.n_templates
-
-                    ack_metrics = qdina_pb2.LocalMetrics(
-                        replica_id=self.replica_id,
-                        total_cost=current_cost_tracker,
-                        costs=costs_per_template,
-                        storage_used=current_storage_usage,
-                        active_indexes=active_indexes,
-                        local_reset=True
-                    )
-
-
-                    while True:
-                        ack_response = self.stub.SubmitMetricsAndGetWorkload(ack_metrics)
-                        if not ack_response.stop_training:
-                            response = ack_response
-                            break
-                        else:
-                            time.sleep(0.2)
                 
                 current_queries = list(response.queries)
                 if not current_queries:
@@ -304,11 +279,12 @@ class QDinaNetworkClient:
                         costs=costs_per_template,
                         storage_used=current_storage_usage,
                         active_indexes=active_indexes,
-                        local_reset=True   # important
+                        local_reset=True
                     )
                     response = self.stub.SubmitMetricsAndGetWorkload(metrics)
                     if response.stop_training:
-                        pass
+                        response, local_state, current_cost_tracker, current_storage_usage, costs_per_template = self._handle_stop_training()
+                        continue
                     
                     local_state, _ = self.env.reset()
                     current_cost_tracker = 0.0
@@ -368,3 +344,45 @@ class QDinaNetworkClient:
             candidates_with_table.append((table, cand))
         
         return candidates_with_table
+    
+
+    def _handle_stop_training(self):
+        """
+        Handles a global episode end: resets the local environment, sends an
+        acknowledgment with local_reset=True, and waits for the new workload.
+
+        Returns:
+            tuple: (response, local_state, current_cost_tracker, current_storage_usage, costs_per_template)
+        """
+        print(f"[Worker Client {self.replica_id}] Master broadcasted stop_training signal. "
+            f"Resetting local environment and acknowledging...")
+
+        # Capture active indexes before resetting
+        active_indexes = self.env.get_active_index_names()
+
+        # Reset the local environment and counters
+        local_state, _ = self.env.reset()
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        current_cost_tracker = 0.0
+        current_storage_usage = 0.0
+        costs_per_template = [0.0] * self.n_templates
+
+        # Build the acknowledgment message
+        ack_metrics = qdina_pb2.LocalMetrics(
+            replica_id=self.replica_id,
+            total_cost=current_cost_tracker,
+            costs=costs_per_template,
+            storage_used=current_storage_usage,
+            active_indexes=active_indexes,
+            local_reset=True
+        )
+
+        # Wait until the server confirms the episode end (stop_training=False)
+        while True:
+            ack_response = self.stub.SubmitMetricsAndGetWorkload(ack_metrics)
+            if not ack_response.stop_training:
+                # New workload received
+                return (ack_response, local_state, current_cost_tracker,
+                        current_storage_usage, costs_per_template)
+            else:
+                time.sleep(0.2)
