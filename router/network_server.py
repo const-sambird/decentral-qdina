@@ -104,7 +104,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     # Remove dead workers that haven't sent any request for more than 10 seconds.
                     now = time.time()
                     dead_workers = [wid for wid, info in self.registered_workers.items()
-                                    if now - info['last_seen'] > 10.0]
+                                    if now - info['last_seen'] > 30.0]
                     for wid in dead_workers:
                         del self.registered_workers[wid]
                         self.episode_reset_acks.discard(wid)
@@ -174,7 +174,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     # Remove workers that have not sent any request for more than 10 seconds.
                     now = time.time()
                     dead_workers = [wid for wid, info in self.registered_workers.items()
-                                    if now - info['last_seen'] > 10.0]
+                                    if now - info['last_seen'] > 30.0]
                     for wid in dead_workers:
                         del self.registered_workers[wid]
                         self.collected_metrics.pop(wid, None)
@@ -281,21 +281,21 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
 
     def _get_routed_slice_for_node(self, node_id):
+        sorted_workers = sorted(self.registered_workers.keys())
+        try:
+            internal_id = sorted_workers.index(node_id)
+        except ValueError:
+            print(f"[WARNING] Node {node_id} not found in registered workers, using fallback.")
+            internal_id = len(sorted_workers)  # fallback
         if hasattr(self, 'execution_mode') and self.execution_mode == 'uniform':
             sliced_queries = []
-            replica_index = node_id - 1
-            print(f"[DEBUG] Uniform mode: node_id={node_id}, replica_index={replica_index}, total queries={len(self.current_workload_pool)}")
+            print(f"[DEBUG] Uniform mode: node_id={node_id}, internal_id={internal_id}, total queries={len(self.current_workload_pool)}")
             for idx, q_text in enumerate(self.current_workload_pool):
-                if idx % self.env.n_replicas == replica_index:
+                if idx % self.env.n_replicas == internal_id:
                     sliced_queries.append(q_text)
             print(f"[DEBUG] Assigned {len(sliced_queries)} queries to node {node_id}")
             return sliced_queries
         else:
-            sorted_workers = sorted(self.registered_workers.keys())
-            try:
-                internal_id = sorted_workers.index(node_id)
-            except ValueError:
-                internal_id = node_id - 1
             sliced_queries = []
             print(f"[DEBUG] Drift mode: node_id={node_id}, internal_id={internal_id}, total queries={len(self.current_workload_pool)}")
             for idx, q_text in enumerate(self.current_workload_pool):
