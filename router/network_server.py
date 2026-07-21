@@ -279,18 +279,19 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
 
     def _get_routed_slice_for_node(self, node_id):
-        sorted_workers = sorted(self.registered_workers.keys())
-        try:
-            internal_id = sorted_workers.index(node_id)
-        except ValueError:
-            internal_id = node_id - 1
         if hasattr(self, 'execution_mode') and self.execution_mode == 'uniform':
             sliced_queries = []
+            replica_index = node_id - 1
             for idx, q_text in enumerate(self.current_workload_pool):
-                if idx % self.env.n_replicas == internal_id:
+                if idx % self.env.n_replicas == replica_index:
                     sliced_queries.append(q_text)
             return sliced_queries
         else:
+            sorted_workers = sorted(self.registered_workers.keys())
+            try:
+                internal_id = sorted_workers.index(node_id)
+            except ValueError:
+                internal_id = node_id - 1
             sliced_queries = []
             for idx, q_text in enumerate(self.current_workload_pool):
                 template_id = self.workload_templates_map[idx]
