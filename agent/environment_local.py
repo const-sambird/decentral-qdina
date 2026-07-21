@@ -9,7 +9,7 @@ class LocalIndexingEnv(gym.Env):
     def __init__(self, replica_id: int, hostname: str, port: int, user: str, password: str,
                  db_name:str, candidates: list, templates: list[int], 
                  n_templates: int, storage_budget: float,
-                 alpha: float = 1.0, beta: float = 0.5,
+                 alpha: float = 10.0, beta: float = 0.5,
                  agent_type: str = 'classical'):
         '''
         Local Environment for a single database replica managing its own indexes.
