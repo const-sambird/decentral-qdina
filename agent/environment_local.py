@@ -195,7 +195,7 @@ class LocalIndexingEnv(gym.Env):
         current_total = sum(current_costs)
 
         if initial_total > 0 and current_total > 0:
-            reward_t = np.log(initial_total / current_total)
+            reward_t = (initial_total - current_total) / initial_total 
         else:
             reward_t = 0.0
 
