@@ -102,13 +102,13 @@ if __name__ == '__main__':
         steps_per_episode = 100
         epsilon_start = 1.0
         epsilon_min = 0.30
-        decay_rate = 0.99
+        decay_rate = 0.9999
         
         for episode in range(args.episodes):
             print(f"\n--- [Master Orchestrator] Starting Global Episode {episode + 1}/{args.episodes} ---")
             
             # Dynamic epsilon decay for exploration-exploitation balance
-            servicer.epsilon = max(epsilon_min, epsilon_start * (decay_rate ** episode))
+            servicer.epsilon = max(epsilon_min, epsilon_start * decay_rate)
             
             with servicer.lock:
                 servicer.stop_training_signal = False
