@@ -200,7 +200,10 @@ class LocalIndexingEnv(gym.Env):
             reward_t = 0.0
 
         reward_s = max(0.0, (self.storage_budget - used_storage) / self.storage_budget)
-        reward = (self.alpha * reward_t) + (self.beta * reward_s)
+        # reward = (self.alpha * reward_t) + (self.beta * reward_s)
+
+        space_penalty = 1.0 - (self._spaces_used / self.storage_budget)
+        reward = ((self.alpha * reward_t) + (self.beta * reward_s)) * space_penalty
 
         terminated = False
         truncated = False
