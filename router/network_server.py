@@ -102,51 +102,51 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 # Phase 1: episode end – wait for reset acknowledgments
                 # This entire block is commented out to disable the synchronization
                 # of episode resets. Workers will not be waiting for stop_training signals.
-                # if self.stop_training_signal:
-                #     # Remove dead workers that haven't sent any request for more than 10 seconds.
-                #     now = time.time()
-                #     dead_workers = [wid for wid, info in self.registered_workers.items()
-                #                     if now - info['last_seen'] > 30.0]
-                #     for wid in dead_workers:
-                #         del self.registered_workers[wid]
-                #         self.episode_reset_acks.discard(wid)
-                #         self.collected_metrics.pop(wid, None)
-                #     if dead_workers:
-                #         print(f"[Server] Removed dead workers during reset: {dead_workers}")
-                #         # If all workers died, reset the episode state and continue
-                #         if len(self.registered_workers) == 0:
-                #             self.stop_training_signal = False
-                #             self.episode_reset_acks.clear()
-                #             return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
-                #
-                #     # Only accept messages with local_reset=True; others are ignored.
-                #     if request.local_reset:
-                #         self.episode_reset_acks.add(worker_id)
-                #         print(f"[Server] Worker {worker_id} acknowledged episode reset. "
-                #             f"({len(self.episode_reset_acks)}/{len(self.registered_workers)})")
-                #     else:
-                #         # Normal metrics during stop signal are ignored – we force a reset.
-                #         return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
-                #
-                #     # Check if all workers have acknowledged the reset.
-                #     if len(self.episode_reset_acks) >= len(self.registered_workers):
-                #         print("[Server] All workers acknowledged reset. Starting next episode.")
-                #         self.stop_training_signal = False
-                #         self.episode_reset_acks.clear()
-                #         self.collected_metrics.clear()
-                #         self.next_workload_slices = {
-                #             w_id: self._get_routed_slice_for_node(w_id)
-                #             for w_id in self.registered_workers.keys()
-                #         }
-                #         
-                #         print(f"[DEBUG] Next slices sizes: { {w: len(self.next_workload_slices.get(w, [])) for w in self.registered_workers} }")
-                #         return qdina_pb2.WorkloadSlice(
-                #             stop_training=False,
-                #             queries=self.next_workload_slices.get(worker_id, [])
-                #         )
-                #     else:
-                #         # Not all workers have reset yet; keep waiting.
-                #         return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
+                if self.stop_training_signal:
+                    # Remove dead workers that haven't sent any request for more than 10 seconds.
+                    now = time.time()
+                    dead_workers = [wid for wid, info in self.registered_workers.items()
+                                    if now - info['last_seen'] > 30.0]
+                    for wid in dead_workers:
+                        del self.registered_workers[wid]
+                        self.episode_reset_acks.discard(wid)
+                        self.collected_metrics.pop(wid, None)
+                    if dead_workers:
+                        print(f"[Server] Removed dead workers during reset: {dead_workers}")
+                        # If all workers died, reset the episode state and continue
+                        if len(self.registered_workers) == 0:
+                            self.stop_training_signal = False
+                            self.episode_reset_acks.clear()
+                            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
+                
+                    # Only accept messages with local_reset=True; others are ignored.
+                    if request.local_reset:
+                        self.episode_reset_acks.add(worker_id)
+                        print(f"[Server] Worker {worker_id} acknowledged episode reset. "
+                            f"({len(self.episode_reset_acks)}/{len(self.registered_workers)})")
+                    else:
+                        # Normal metrics during stop signal are ignored – we force a reset.
+                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
+                
+                    # Check if all workers have acknowledged the reset.
+                    if len(self.episode_reset_acks) >= len(self.registered_workers):
+                        print("[Server] All workers acknowledged reset. Starting next episode.")
+                        self.stop_training_signal = False
+                        self.episode_reset_acks.clear()
+                        self.collected_metrics.clear()
+                        self.next_workload_slices = {
+                            w_id: self._get_routed_slice_for_node(w_id)
+                            for w_id in self.registered_workers.keys()
+                        }
+                        
+                        print(f"[DEBUG] Next slices sizes: { {w: len(self.next_workload_slices.get(w, [])) for w in self.registered_workers} }")
+                        return qdina_pb2.WorkloadSlice(
+                            stop_training=False,
+                            queries=self.next_workload_slices.get(worker_id, [])
+                        )
+                    else:
+                        # Not all workers have reset yet; keep waiting.
+                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
 
                 # Store the metrics that this worker sent for the current step.
                 if request.local_reset:
@@ -259,7 +259,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 self.step_computed = False
                                 self.lock.notify_all()
                                 # We don't set stop_training_signal anymore.
-                                # self.stop_training_signal = True
+                                self.stop_training_signal = True
                                 return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
                         else:
                             # Another worker is already the leader; wait for it.
@@ -270,8 +270,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
                 # After the loop, if the stop signal is active, tell the worker to stop.
                 # This block is also commented because we never set stop_training_signal.
-                # if self.stop_training_signal:
-                #     return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
+                if self.stop_training_signal:
+                    return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
 
                 # Otherwise, return the queries assigned to this specific worker.
                 return qdina_pb2.WorkloadSlice(

@@ -167,8 +167,8 @@ class LocalIndexingEnv(gym.Env):
             candidate = self.candidates[action]
             required_space = self._get_candidate_size(candidate)
             if self._spaces_used + required_space > self.storage_budget:
-                reward = 0.0
-                terminated = True
+                reward = -10.0 
+                terminated = False
                 truncated = False
                 return self._get_obs(), reward, terminated, truncated, {
                     'costs': self.initial_costs,
