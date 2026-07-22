@@ -55,7 +55,7 @@ class QDinaNetworkClient:
         self.gamma = 0.99
         self.epsilon = 1.0
         self.epsilon_min = 0.05
-        self.epsilon_decay = 0.9999
+        self.epsilon_decay = 0.9995
         
         self.env = None
 
