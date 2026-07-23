@@ -273,7 +273,7 @@ class QDinaNetworkClient:
                     print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
                     current_cost_tracker = info.get('total_cost', 0.0)
                     current_storage_usage = info.get('storage', 0.0)
-                    costs_per_template = info.get('costs', [0.0] * self.n_templates)
+                    costs_per_template = info.get('costs_knapsack', [0.0] * self.n_templates)
                     active_indexes = self.env.get_active_index_names()
                     
                     metrics = qdina_pb2.LocalMetrics(
@@ -302,8 +302,10 @@ class QDinaNetworkClient:
                 
                 current_cost_tracker = info.get('total_cost', 0.0)
                 current_storage_usage = info.get('storage', 0.0)
-                
-                if 'costs' in info:
+
+                if 'costs_knapsack' in info and info['costs_knapsack']:
+                    costs_per_template = [float(c) for c in info['costs_knapsack']]
+                elif 'costs' in info:
                     costs_per_template = [float(c) for c in info['costs']]
                 else:
                     costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
@@ -358,7 +360,11 @@ class QDinaNetworkClient:
             f"Resetting local environment and acknowledging...")
 
         # Capture active indexes before resetting
-        active_indexes = self.env.get_active_index_names()
+        # active_indexes = self.env.get_active_index_names()
+
+        knapsack_indexes = self.env.get_knapsack_selection()
+        active_indexes = [f"{table}_{'_'.join(cols)}" for table, cols in knapsack_indexes]
+        print(f"[Worker {self.replica_id}] Knapsack selected {len(knapsack_indexes)} indexes within {self.storage_budget/1e9:.1f} GB budget.")
 
         # Reset the local environment and counters
         local_state, _ = self.env.reset()

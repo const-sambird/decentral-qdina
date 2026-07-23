@@ -49,6 +49,8 @@ class LocalIndexingEnv(gym.Env):
 
         self.db_replica = Replica(self.replica_id, self.hostname, self.port, self.db_name, self.user, self.password)
         self.initial_costs = [0 for _ in range(self.n_templates)]
+
+        self.index_gains = {} 
         
     def _get_candidate_size(self, candidate) -> int:
         """
@@ -141,15 +143,14 @@ class LocalIndexingEnv(gym.Env):
     def step(self, action: int, queries=None):
         """
         Execute one local indexing action (add/drop) given a specific sub-workload slice.
-        This version implements a hard storage budget constraint similar to the original qDINA:
-        - Before adding an index, we check if the required space fits in the remaining budget.
-        - If it does not fit, the action is rejected (state unchanged) and the episode terminates.
-        - The reward penalizes both performance loss and storage usage.
-        - Index sizes are computed using HypoPG and cached for efficiency.
+        This version removes the hard storage budget limit during training, but tracks
+        the gain (cost reduction) of each index to allow a final knapsack selection.
+        The reward penalizes both performance loss and storage usage.
         """
         if queries is None:
             queries = []
 
+        # Update workload state (template frequencies)
         self._current_workload_state = np.zeros(self.n_templates, dtype=np.int32)
         for q_idx in range(len(queries)):
             if q_idx < len(self.templates):
@@ -157,59 +158,72 @@ class LocalIndexingEnv(gym.Env):
                 if 0 <= t_id < self.n_templates:
                     self._current_workload_state[t_id] += 1
 
+        # Clear any virtual indexes from previous steps
         tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
         if tables_to_clean:
             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
 
-        self.initial_costs = self._estimate_workload_costs(queries)
+        # Cost before applying the action 
+        initial_costs = self._estimate_workload_costs(queries)
+        initial_total = sum(initial_costs)
 
+        # Apply the action (add or drop the selected index) 
         if self._current_indexes[action] == 0:
+            # Add index
             candidate = self.candidates[action]
             required_space = self._get_candidate_size(candidate)
-            if self._spaces_used + required_space > self.storage_budget:
-                reward = -10.0 
-                terminated = False
-                truncated = False
-                return self._get_obs(), reward, terminated, truncated, {
-                    'costs': self.initial_costs,
-                    'total_cost': sum(self.initial_costs),
-                    'storage': self._spaces_used,
-                    'agent_mode': self.agent_type
-                }
-            else:
-                self._current_indexes[action] = 1
-                self._spaces_used += required_space
+            self._current_indexes[action] = 1
+            self._spaces_used += required_space
+            # We'll compute the gain after estimating costs with the new index
         else:
+            # Drop index
             candidate = self.candidates[action]
             size = self._get_candidate_size(candidate)
             self._current_indexes[action] = 0
             self._spaces_used -= size
 
+        # Cost after applying the action
         if tables_to_clean:
             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
         current_costs = self._estimate_workload_costs(queries)
+        current_total = sum(current_costs)
+
+        knapsack_indexes = self.get_knapsack_selection()  # liste de (table, colonnes)
+        costs_knapsack = self._estimate_cost_with_indexes(queries, knapsack_indexes)
+
+        # Compute the gain (cost reduction) attributable to this action
+        gain = initial_total - current_total  # Positive if costs decreased
+
+        # Store the gain if it's positive and we are adding an index;
+        # if we are dropping, remove the entry (if any) because the index is no longer active.
+        if gain > 0 and self._current_indexes[action] == 1:
+            self.index_gains[action] = gain
+        else:
+            # If the gain is non-positive or we dropped, discard the stored gain.
+            self.index_gains.pop(action, None)
 
         used_storage = self._spaces_used
 
-        initial_total = sum(self.initial_costs)
-        current_total = sum(current_costs)
-
+        # Reward calculation
+        # Performance gain (relative improvement)
         if initial_total > 0 and current_total > 0:
-            reward_t = (initial_total - current_total) / initial_total 
+            reward_t = (initial_total - current_total) / initial_total
         else:
             reward_t = 0.0
 
-        reward_s = max(0.0, (self.storage_budget - used_storage) / self.storage_budget)
-        # reward = (self.alpha * reward_t) + (self.beta * reward_s)
+        # Space penalty (proportional to used space)
+        space_penalty = self.beta * (self._spaces_used / self.storage_budget)
 
-        space_penalty = 1.0 - (self._spaces_used / self.storage_budget)
-        reward = ((self.alpha * reward_t) + (self.beta * reward_s)) * space_penalty
+        # Combined reward: performance gain minus space penalty
+        reward = self.alpha * reward_t - space_penalty
 
         terminated = False
         truncated = False
+
         return self._get_obs(), reward, terminated, truncated, {
             'costs': current_costs,
-            'total_cost': sum(current_costs),
+            'costs_knapsack': costs_knapsack,
+            'total_cost': current_total,
             'storage': used_storage,
             'agent_mode': self.agent_type
         }
@@ -231,3 +245,50 @@ class LocalIndexingEnv(gym.Env):
                 index_name = f"{table}_{'_'.join(columns)}"
                 active_indexes.append(index_name)
         return active_indexes
+
+    def get_knapsack_selection(self):
+        from common.knapsack import select_indexes_knapsack
+
+        items = []
+        for action, gain in self.index_gains.items():
+            if gain > 0:
+                size = self._get_candidate_size(self.candidates[action])
+                items.append((gain, size, action))
+        
+        if not items:
+            return []
+        
+        selected_items = select_indexes_knapsack(
+            [(gain, size) for gain, size, _ in items],
+            self.storage_budget
+        )
+
+        selected_actions = []
+        for gain, size in selected_items:
+
+            for g, s, act in items:
+                if g == gain and s == size:
+                    selected_actions.append(act)
+                    break
+        
+
+        selected_indexes = []
+        for act in selected_actions:
+            table, columns = self.candidates[act]
+            selected_indexes.append((table, columns))
+        return selected_indexes
+
+
+    def _estimate_cost_with_indexes(self, queries, indexes):
+        """Estimate costs with a given list of indexes (no modification of internal state)."""
+        if not queries:
+            return [0.0] * self.n_templates
+
+        local_queue = Queue()
+        conn_string = f"host={self.hostname} port={self.port} dbname={self.db_name} user={self.user} password={self.password}"
+        estimator = CostEstimator(self.n_templates, conn_string, local_queue)
+        p = Process(target=estimator.run, args=(queries, self.templates, indexes))
+        p.start()
+        costs = local_queue.get(timeout=120)
+        p.join()
+        return costs

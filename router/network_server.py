@@ -63,6 +63,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.last_valid_total_cost = {}
         self.last_valid_template_costs = {}
 
+        self.knapsack_metrics = {}
+
     def RegisterWorker(self, request, context):
         with self.lock:
             worker_id = request.replica_id
@@ -121,6 +123,18 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 
                     # Only accept messages with local_reset=True; others are ignored.
                     if request.local_reset:
+                        total_cost = self.last_valid_total_cost.get(worker_id, 0.0)
+                        costs = self.last_valid_template_costs.get(worker_id, [0.0]*self.n_templates)
+                        # Stocker les index knapsack dans la variable dédiée
+                        self.knapsack_metrics[worker_id] = {
+                            'total_cost': total_cost,
+                            'costs': costs,
+                            'storage_used': request.storage_used,
+                            'indexes': list(request.active_indexes),
+                            'local_reset': True
+                        }
+                        # On peut aussi garder last_known_metrics pour d'autres usages
+                        self.last_known_metrics[worker_id] = self.knapsack_metrics[worker_id].copy()
                         self.episode_reset_acks.add(worker_id)
                         print(f"[Server] Worker {worker_id} acknowledged episode reset. "
                             f"({len(self.episode_reset_acks)}/{len(self.registered_workers)})")
@@ -153,6 +167,14 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     # A local reset (budget exceeded) occurred; reuse the last valid costs.
                     total_cost = self.last_valid_total_cost.get(worker_id, 0.0)
                     costs = self.last_valid_template_costs.get(worker_id, [0.0]*self.n_templates)
+                    # --- Stocker les index knapsack pour l'export ---
+                    self.last_known_metrics[worker_id] = {
+                        'total_cost': total_cost,
+                        'costs': costs,
+                        'storage_used': request.storage_used,
+                        'indexes': list(request.active_indexes),   # ici les index knapsack
+                        'local_reset': True
+                    }
                 else:
                     total_cost = request.total_cost
                     costs = list(request.costs)
@@ -373,7 +395,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             writer = csv.writer(f, lineterminator="\n")
 
             # Iterate over each replica's active indexes
-            for replica_id, worker_data in self.last_known_metrics.items():
+            for replica_id, worker_data in self.knapsack_metrics.items():
                 indexes = worker_data.get('indexes', [])
                 for composite in indexes:
                     # Expected format: "table_complete_col1_col2_..." (e.g., "lineitem_l_orderkey_l_shipdate")
