@@ -168,7 +168,7 @@ class LocalIndexingEnv(gym.Env):
         if action == no_op_action:
             current_costs = self.last_costs if hasattr(self, 'last_costs') else self.initial_costs
             current_total = sum(current_costs)
-            reward = self.bonus_noop
+            reward = 0.01
             return self._get_obs(), reward, False, False, {
                 'costs': current_costs,
                 'total_cost': current_total,
@@ -210,7 +210,7 @@ class LocalIndexingEnv(gym.Env):
 
         cost_saving = initial_total - current_total
         storage_penalty = self.beta * (used_storage / self.storage_budget) ** 2
-        toggle_penalty = self.penalty_toggle * (initial_total + current_total)  # pénalité proportionnelle
+        toggle_penalty = 0.1
 
         reward = cost_saving - storage_penalty - toggle_penalty
 
