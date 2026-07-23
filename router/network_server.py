@@ -66,6 +66,19 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.routing_change_interval = 5
         self.steps_since_last_change = 0
 
+
+        template_counts = np.zeros(n_templates)
+        for t_id in self.workload_templates_map:
+            template_counts[t_id] += 1
+
+        sorted_templates = np.argsort(template_counts)[::-1]
+        initial_routes = np.zeros(n_templates, dtype=np.int32)
+        for i, t in enumerate(sorted_templates):
+            initial_routes[t] = i % n_replicas
+
+        self.routing_table_state = initial_routes
+        self.env._state_routes = initial_routes
+
     def RegisterWorker(self, request, context):
         with self.lock:
             worker_id = request.replica_id
