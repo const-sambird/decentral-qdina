@@ -34,7 +34,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.epsilon = 1.0
         self.batch_size = batch_size
         
-        self.router_memory = ReplayMemory(capacity=5000)
+        self.router_memory = ReplayMemory(capacity=50000)
         
         # Threading primitives for synchronization
         self.lock = threading.Condition()

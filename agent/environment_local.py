@@ -9,7 +9,7 @@ class LocalIndexingEnv(gym.Env):
     def __init__(self, replica_id: int, hostname: str, port: int, user: str, password: str,
                  db_name:str, candidates: list, templates: list[int], 
                  n_templates: int, storage_budget: float,
-                 alpha: float = 10.0, beta: float = 0.5,
+                 alpha: float = 10.0, beta: float = 2.0,
                  agent_type: str = 'classical'):
         '''
         Local Environment for a single database replica managing its own indexes.
@@ -216,8 +216,9 @@ class LocalIndexingEnv(gym.Env):
         reward_s = max(0.0, (self.storage_budget - used_storage) / self.storage_budget)
         # reward = (self.alpha * reward_t) + (self.beta * reward_s)
 
-        space_penalty = 1.0 - (self._spaces_used / self.storage_budget)
-        reward = ((self.alpha * reward_t) + (self.beta * reward_s)) * space_penalty
+        cost_saving = initial_total - current_total
+        storage_penalty = self.beta * (used_storage / self.storage_budget) ** 2
+        reward = cost_saving - storage_penalty
 
         terminated = False
         truncated = False

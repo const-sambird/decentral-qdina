@@ -7,7 +7,7 @@ import random
 from router.DQN import DQN
 
 class RouterAgent:
-    def __init__(self, n_templates: int, n_replicas: int, n_actions: int, layer_features: list = [64, 64], lr: float = 1e-3, gamma: float = 0.99):        
+    def __init__(self, n_templates: int, n_replicas: int, n_actions: int, layer_features: list = [128, 128], lr: float = 1e-3, gamma: float = 0.99):        
         '''
         Central Router Agent handling the global query distribution policy.
         
