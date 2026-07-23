@@ -41,7 +41,8 @@ class QDinaNetworkClient:
         self.channel = grpc.insecure_channel(server_address)
         self.stub = qdina_pb2_grpc.QDinaServiceStub(self.channel)
         
-        self.n_templates = 22  
+        self.n_templates = 22
+        self.n_candidates = 0 
         self.candidates = []   
         self.templates_map = []
         
@@ -50,8 +51,8 @@ class QDinaNetworkClient:
         self.optimizer = None
         self.loss_fn = nn.MSELoss()
         
-        self.local_memory = ReplayMemory(capacity=10000)
-        self.batch_size = 16
+        self.local_memory = ReplayMemory(capacity=50000)
+        self.batch_size = 32
         self.gamma = 0.99
         self.epsilon = 1.0
         self.epsilon_min = 0.05
@@ -79,7 +80,7 @@ class QDinaNetworkClient:
 
     def _init_agent_networks(self):
         n_actions = self.env.action_space.n
-        n_observations = self.n_templates + self.env.n_actions
+        n_observations = 2 * self.n_templates + self.n_candidates
         if self.agent_mode == 'classical':
             self.policy_net = DQN(n_observations, n_actions, layer_features=[256, 128, 64])
             self.target_net = DQN(n_observations, n_actions, layer_features=[256, 128, 64])
@@ -88,7 +89,8 @@ class QDinaNetworkClient:
             self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-3)
             print(f"[Worker Client {self.replica_id}] Classical DQN Policy Network built successfully.")
         elif self.agent_mode == 'quantum':
-            self.policy_net = QuantumDQN(n_inputs=self.n_templates, n_qubits=5, n_actions=n_actions, qnn_type='twolocal', qnn_output='layer')
+            n_observations = 2 * self.n_templates + self.n_candidates
+            self.policy_net = QuantumDQN(n_inputs=n_observations, n_qubits=5, n_actions=n_actions, qnn_type='twolocal', qnn_output='layer')
             self.optimizer = SPSAOptimiser(
                 self.policy_net, 
                 lr=0.1, 
@@ -111,7 +113,7 @@ class QDinaNetworkClient:
         transitions = self.local_memory.sample(self.batch_size)
         states, actions, rewards, next_states, dones = zip(*transitions)
         
-        expected_size = self.n_templates + self.env.n_actions  # taille correcte
+        expected_size = 2 * self.n_templates + self.n_candidates
         
         fixed_states = []
         for s in states:
@@ -221,6 +223,7 @@ class QDinaNetworkClient:
         queries, templates = load_training_set_queries('./workload_output/', fraction=1.0)
 
         self.candidates = self._generate_candidates(queries, templates)
+        self.n_candidates = len(self.candidates)
 
         self.templates_map = list(range(self.n_templates))
         

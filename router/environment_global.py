@@ -80,7 +80,7 @@ class GlobalRoutingEnv(gym.Env):
             jain_index = 1.0
 
         makespan_scaled = np.log10(makespan_raw + 1.0)
-        reward = -makespan_scaled + (jain_index * 2.0)
+        reward = -makespan_scaled + jain_index
         
         if np.any(costs == 0.0) and np.sum(costs) > 0:
             reward -= 5.0 

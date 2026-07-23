@@ -24,6 +24,7 @@ class LocalIndexingEnv(gym.Env):
         self.password = password
         self.db_name = db_name
         self.candidates = candidates
+        self.n_candidates = len(self.candidates)                     # <-- nouveau
         self.templates = templates
         self.n_templates = n_templates
         self.storage_budget = storage_budget
@@ -31,16 +32,17 @@ class LocalIndexingEnv(gym.Env):
         self.beta = beta
         self.agent_type = agent_type.lower()
         
-        self.n_actions = len(self.candidates)
+        self.n_actions = self.n_candidates + 1  
         self.action_space = gym.spaces.Discrete(self.n_actions)
         
         self.observation_space = gym.spaces.Box(
             low=0, high=1000,
-            shape=(self.n_templates + self.n_actions,),
+            shape=(n_templates + self.n_candidates + n_templates,),
             dtype=np.float32
         )
 
-        self._current_indexes = np.zeros(self.n_actions)
+        self._current_indexes = np.zeros(self.n_candidates)
+        self.last_costs = [0.0] * n_templates  
         self._current_workload_state = np.zeros(self.n_templates, dtype=np.int32)
         
         # Attributes for real storage budget management
@@ -49,7 +51,7 @@ class LocalIndexingEnv(gym.Env):
 
         self.db_replica = Replica(self.replica_id, self.hostname, self.port, self.db_name, self.user, self.password)
         self.initial_costs = [0 for _ in range(self.n_templates)]
-        
+
     def _get_candidate_size(self, candidate) -> int:
         """
         Compute the real size (in bytes) of a candidate index using HypoPG.
@@ -85,15 +87,16 @@ class LocalIndexingEnv(gym.Env):
             return default_size
 
     def _estimate_workload_costs(self, queries):
-        if not queries:
-            return [0 for _ in range(self.n_templates)]
-        
+        tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
+        if tables_to_clean:
+            self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
+
         local_queue = Queue()
         active_indexes = []
         for idx_pos, val in enumerate(self._current_indexes):
             if val == 1:
                 active_indexes.append(self.candidates[idx_pos])
-                
+
         conn_string = f"host={self.hostname} port={self.port} dbname={self.db_name} user={self.user} password={self.password}"
         estimator = CostEstimator(self.n_templates, conn_string, local_queue)
         p = Process(target=estimator.run, args=(queries, self.templates, active_indexes))
@@ -112,15 +115,15 @@ class LocalIndexingEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
-        try:
-            if self.candidates:
-                tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
-                if tables_to_clean:
-                    self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
-        except Exception as db_err:
-            print(f"[Worker Environment {self.replica_id} Warning] Impossible de reset les index : {db_err}")
+        # try:
+        #     if self.candidates:
+        #         tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
+        #         if tables_to_clean:
+        #             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
+        # except Exception as db_err:
+        #     print(f"[Worker Environment {self.replica_id} Warning] Impossible de reset les index : {db_err}")
         
-        self._current_indexes = np.zeros(self.n_actions)
+        self._current_indexes = np.zeros(self.n_candidates)
         self._spaces_used = 0.0
         
         incoming_queries = []
@@ -135,7 +138,7 @@ class LocalIndexingEnv(gym.Env):
                     self._current_workload_state[t_id] += 1
                     
         self.initial_costs = self._estimate_workload_costs(incoming_queries)
-        
+        self.last_costs = self.initial_costs[:] 
         return self._get_obs(), {'agent_mode': self.agent_type}
         
     def step(self, action: int, queries=None):
@@ -157,22 +160,33 @@ class LocalIndexingEnv(gym.Env):
                 if 0 <= t_id < self.n_templates:
                     self._current_workload_state[t_id] += 1
 
-        tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
-        if tables_to_clean:
-            self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
+        no_op_action = self.n_actions - 1
+        if action == no_op_action:
+            current_costs = self.last_costs if hasattr(self, 'last_costs') else self.initial_costs
+            current_total = sum(current_costs)
+            reward = 0.0
+            terminated = False
+            truncated = False
+            return self._get_obs(), reward, terminated, truncated, {
+                'costs': current_costs,
+                'total_cost': current_total,
+                'storage': self._spaces_used,
+                'agent_mode': self.agent_type
+            }
 
         self.initial_costs = self._estimate_workload_costs(queries)
+        initial_total = sum(self.initial_costs)
 
         if self._current_indexes[action] == 0:
             candidate = self.candidates[action]
             required_space = self._get_candidate_size(candidate)
             if self._spaces_used + required_space > self.storage_budget:
-                reward = -10.0 
+                reward = -10.0
                 terminated = False
                 truncated = False
                 return self._get_obs(), reward, terminated, truncated, {
                     'costs': self.initial_costs,
-                    'total_cost': sum(self.initial_costs),
+                    'total_cost': initial_total,
                     'storage': self._spaces_used,
                     'agent_mode': self.agent_type
                 }
@@ -185,9 +199,9 @@ class LocalIndexingEnv(gym.Env):
             self._current_indexes[action] = 0
             self._spaces_used -= size
 
-        if tables_to_clean:
-            self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
         current_costs = self._estimate_workload_costs(queries)
+        current_total = sum(current_costs)
+        self.last_costs = current_costs[:]
 
         used_storage = self._spaces_used
 
@@ -215,9 +229,11 @@ class LocalIndexingEnv(gym.Env):
         }
     
     def _get_obs(self):
+        costs_norm = np.log10(np.array(self.last_costs, dtype=np.float32) + 1.0)
         return np.concatenate([
             self._current_workload_state.astype(np.float32),
-            self._current_indexes.astype(np.float32)
+            self._current_indexes.astype(np.float32),
+            costs_norm
         ])
     
     def get_active_index_names(self):
