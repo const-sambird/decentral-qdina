@@ -52,6 +52,9 @@ class LocalIndexingEnv(gym.Env):
         self.db_replica = Replica(self.replica_id, self.hostname, self.port, self.db_name, self.user, self.password)
         self.initial_costs = [0 for _ in range(self.n_templates)]
 
+        self.penalty_toggle = 1e-6
+        self.bonus_noop = 1e-3
+
     def _get_candidate_size(self, candidate) -> int:
         """
         Compute the real size (in bytes) of a candidate index using HypoPG.
@@ -161,18 +164,20 @@ class LocalIndexingEnv(gym.Env):
                     self._current_workload_state[t_id] += 1
 
         no_op_action = self.n_actions - 1
+
         if action == no_op_action:
             current_costs = self.last_costs if hasattr(self, 'last_costs') else self.initial_costs
             current_total = sum(current_costs)
-            reward = 0.0
-            terminated = False
-            truncated = False
-            return self._get_obs(), reward, terminated, truncated, {
+            reward = self.bonus_noop
+            return self._get_obs(), reward, False, False, {
                 'costs': current_costs,
                 'total_cost': current_total,
                 'storage': self._spaces_used,
                 'agent_mode': self.agent_type
             }
+
+        old_indexes = self._current_indexes.copy()
+        old_storage = self._spaces_used
 
         self.initial_costs = self._estimate_workload_costs(queries)
         initial_total = sum(self.initial_costs)
@@ -182,9 +187,7 @@ class LocalIndexingEnv(gym.Env):
             required_space = self._get_candidate_size(candidate)
             if self._spaces_used + required_space > self.storage_budget:
                 reward = -10.0
-                terminated = False
-                truncated = False
-                return self._get_obs(), reward, terminated, truncated, {
+                return self._get_obs(), reward, False, False, {
                     'costs': self.initial_costs,
                     'total_cost': initial_total,
                     'storage': self._spaces_used,
@@ -205,26 +208,17 @@ class LocalIndexingEnv(gym.Env):
 
         used_storage = self._spaces_used
 
-        initial_total = sum(self.initial_costs)
-        current_total = sum(current_costs)
-
-        if initial_total > 0 and current_total > 0:
-            reward_t = (initial_total - current_total) / initial_total 
-        else:
-            reward_t = 0.0
-
-        reward_s = max(0.0, (self.storage_budget - used_storage) / self.storage_budget)
-        # reward = (self.alpha * reward_t) + (self.beta * reward_s)
-
         cost_saving = initial_total - current_total
         storage_penalty = self.beta * (used_storage / self.storage_budget) ** 2
-        reward = cost_saving - storage_penalty
+        toggle_penalty = self.penalty_toggle * (initial_total + current_total)  # pénalité proportionnelle
+
+        reward = cost_saving - storage_penalty - toggle_penalty
 
         terminated = False
         truncated = False
         return self._get_obs(), reward, terminated, truncated, {
             'costs': current_costs,
-            'total_cost': sum(current_costs),
+            'total_cost': current_total,
             'storage': used_storage,
             'agent_mode': self.agent_type
         }

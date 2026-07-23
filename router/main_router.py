@@ -102,7 +102,7 @@ if __name__ == '__main__':
         steps_per_episode = 100
         epsilon_start = 1.0
         epsilon_min = 0.05
-        decay_rate = 0.95
+        decay_rate = 0.99
         
         for episode in range(args.episodes):
             print(f"\n--- [Master Orchestrator] Starting Global Episode {episode + 1}/{args.episodes} ---")
@@ -112,6 +112,7 @@ if __name__ == '__main__':
             
             with servicer.lock:
                 servicer.stop_training_signal = False
+                servicer.steps_since_last_change = 0
                 servicer.global_step_counter = 0
             
             if args.mode == 'drift' and episode > 0:

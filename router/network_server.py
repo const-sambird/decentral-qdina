@@ -63,6 +63,9 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.last_valid_total_cost = {}
         self.last_valid_template_costs = {}
 
+        self.routing_change_interval = 5
+        self.steps_since_last_change = 0
+
     def RegisterWorker(self, request, context):
         with self.lock:
             worker_id = request.replica_id
@@ -205,9 +208,14 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
                                 # Get current state from the global environment.
                                 state = self.env._get_obs()
-                                # Choose an action (exploration vs exploitation) using the agent.
-                                action = self.agent.select_action(state, self.epsilon)
-                                # Apply the action and update the environment with the costs.
+
+                                self.steps_since_last_change += 1
+                                if self.steps_since_last_change >= self.routing_change_interval:
+                                    action = self.agent.select_action(state, self.epsilon)
+                                    self.steps_since_last_change = 0
+                                else:
+                                    action = 0  # do nothing
+
                                 next_state, reward, _, _, info = self.env.step(
                                     action,
                                     external_costs=costs_array,
@@ -231,7 +239,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                     f"Makespan: {float(np.max(costs_array)):14.2f} | "
                                     f"Jain Index: {info.get('jain_index', 1.0):.4f} | "
                                     f"Reward: {reward:15.2f} | "
-                                    f"Epsilon: {max(0.2, self.epsilon * 0.999):.3f} | "
+                                    f"Epsilon: {self.epsilon:.3f} | "
                                     f"Workers: {len(sorted_workers)}")
 
                                 # Store the experience in the replay memory for training.

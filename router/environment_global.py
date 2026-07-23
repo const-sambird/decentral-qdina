@@ -57,6 +57,8 @@ class GlobalRoutingEnv(gym.Env):
         """
         Execute one global routing configuration change step.
         """
+        old_routes = self._state_routes.copy()
+
         instruction = self._decode_action(action)
         if instruction is not None:
             template_idx, target_replica = instruction
@@ -80,7 +82,9 @@ class GlobalRoutingEnv(gym.Env):
             jain_index = 1.0
 
         makespan_scaled = np.log10(makespan_raw + 1.0)
-        reward = -makespan_scaled + jain_index
+        num_changes = np.sum(old_routes != self._state_routes)
+        
+        reward = -makespan_scaled + jain_index - 0.01 * num_changes
         
         if np.any(costs == 0.0) and np.sum(costs) > 0:
             reward -= 5.0 
