@@ -7,7 +7,7 @@ import random
 from router.DQN import DQN
 
 class RouterAgent:
-    def __init__(self, n_templates: int, n_replicas: int, n_actions: int, layer_features: list = [128, 128], lr: float = 1e-3, gamma: float = 0.99):        
+    def __init__(self, n_templates: int, n_replicas: int, n_actions: int, layer_features: list = [128, 128], lr: float = 1e-3, gamma: float = 0.99):
         '''
         Central Router Agent handling the global query distribution policy.
         
@@ -23,7 +23,8 @@ class RouterAgent:
         self.n_replicas = n_replicas
         self.n_templates = n_templates
         
-        input_size = (self.n_templates * self.n_replicas) + self.n_templates
+        # Input size: routes one-hot (n_templates * n_replicas) + costs (n_templates) + worker loads (n_replicas)
+        input_size = (self.n_templates * self.n_replicas) + self.n_templates + self.n_replicas
 
         self.policy_net = DQN(input_size, n_actions, layer_features)
         self.target_net = DQN(input_size, n_actions, layer_features)
@@ -37,13 +38,18 @@ class RouterAgent:
     def _prepare_state_tensor(self, state_batch, batch_size, device):
         """
         Prepares the state tensor for input into the DQN.
+        State format: [routes (n_templates), costs (n_templates), worker_loads (n_replicas)]
         """
+        # Extract routes (first n_templates elements)
         routes_raw = state_batch[:, :self.n_templates].to(torch.long)
-        costs_raw = state_batch[:, self.n_templates:].to(torch.float32)
+        # Extract costs (next n_templates elements)
+        costs_raw = state_batch[:, self.n_templates:2*self.n_templates].to(torch.float32)
+        # Extract worker loads (last n_replicas elements)
+        worker_loads_raw = state_batch[:, 2*self.n_templates:2*self.n_templates+self.n_replicas].to(torch.float32)
         
         routes_one_hot = F.one_hot(routes_raw, num_classes=self.n_replicas).view(batch_size, -1).float()
         
-        return torch.cat([routes_one_hot, costs_raw], dim=1)
+        return torch.cat([routes_one_hot, costs_raw, worker_loads_raw], dim=1)
         
     def select_action(self, state, epsilon: float):
         '''
@@ -103,7 +109,6 @@ class RouterAgent:
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         
         self.optimizer.step()
-
 
     def soft_update(self, tau=0.005):
         for target_param, policy_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
