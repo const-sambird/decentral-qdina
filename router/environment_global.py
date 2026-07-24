@@ -55,7 +55,6 @@ class GlobalRoutingEnv(gym.Env):
         if options and 'initial_routing' in options:
             self._state_routes = np.array(options['initial_routing'], dtype=np.int32)
         else:
-            # self._state_routes = np.random.randint(0, self.n_replicas, size=self.n_templates, dtype=np.int32)
             self._state_routes = np.array([i % self.n_replicas for i in range(self.n_templates)], dtype=np.int32)
         
         self._state_costs = np.zeros(self.n_templates, dtype=np.float64)
@@ -91,22 +90,32 @@ class GlobalRoutingEnv(gym.Env):
             self._state_worker_loads = np.array(worker_loads, dtype=np.int32)
 
         makespan_raw = float(np.max(costs))
+        makespan_scaled = np.log10(makespan_raw + 1.0)
+
+        # Calculate Jain index for logging only (not used in reward)
         sum_costs = np.sum(costs)
         sum_sq_costs = np.sum(costs ** 2)
-
         if sum_sq_costs > 0:
             jain_index = (sum_costs ** 2) / (self.n_replicas * sum_sq_costs)
         else:
             jain_index = 1.0
 
-        makespan_scaled = np.log10(makespan_raw + 1.0)
         num_changes = np.sum(old_routes != self._state_routes)
 
-        # Penalize load imbalance (standard deviation of worker loads)
-        load_std = np.std(self._state_worker_loads) if self._state_worker_loads.size > 1 else 0.0
-        load_penalty = 0.01 * load_std  # small penalty, can be tuned
+        # Strong imbalance penalties based on coefficient of variation
+        mean_cost = np.mean(costs) + 1e-6
+        std_cost = np.std(costs)
+        cv = std_cost / mean_cost 
+        cost_imbalance_penalty = 0.5 * cv 
 
-        reward = -makespan_scaled + jain_index*5 - 0.01 * num_changes - load_penalty
+        mean_load = np.mean(self._state_worker_loads) + 1e-6
+        std_load = np.std(self._state_worker_loads)
+        load_cv = std_load / mean_load
+        load_imbalance_penalty = 0.3 * load_cv 
+
+        change_penalty = 0.01 * num_changes
+
+        reward = -makespan_scaled - cost_imbalance_penalty - load_imbalance_penalty - change_penalty
 
         if np.any(costs == 0.0) and np.sum(costs) > 0:
             reward -= 5.0
