@@ -56,7 +56,8 @@ class QDinaNetworkClient:
         self.gamma = 0.99
         self.epsilon = 1.0
         self.epsilon_min = 0.05
-        self.epsilon_decay = 0.9995
+        self.epsilon_decay = 0.95
+        self.episode_step_count = 0
         
         self.env = None
 
@@ -315,7 +316,9 @@ class QDinaNetworkClient:
                 print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.2f}")
 
                 if not response.stop_training:
-                    self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+                    self.episode_step_count += 1
+                    fraction = self.episode_step_count / 85
+                    self.epsilon = max(self.epsilon_min, 1.0 - fraction * (1.0 - self.epsilon_min))
 
             except grpc.RpcError as e:
                 print(f"[Worker Client {self.replica_id}] Connection lost with master router. Retrying in 5 seconds... ({e.code()})")
@@ -365,7 +368,8 @@ class QDinaNetworkClient:
 
         # Reset the local environment and counters
         local_state, _ = self.env.reset()
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        self.epsilon = 1.0
+        self.episode_step_count = 0
         current_cost_tracker = 0.0
         current_storage_usage = 0.0
         costs_per_template = [0.0] * self.n_templates
