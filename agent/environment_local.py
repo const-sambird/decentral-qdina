@@ -9,7 +9,7 @@ class LocalIndexingEnv(gym.Env):
     def __init__(self, replica_id: int, hostname: str, port: int, user: str, password: str,
                  db_name:str, candidates: list, templates: list[int], 
                  n_templates: int, storage_budget: float,
-                 alpha: float = 10.0, beta: float = 5.0,
+                 alpha: float = 10.0, beta: float = 1.0,
                  agent_type: str = 'classical'):
         '''
         Local Environment for a single database replica managing its own indexes.
@@ -176,10 +176,17 @@ class LocalIndexingEnv(gym.Env):
                 'agent_mode': self.agent_type
             }
 
+        # Save old state to know if we are adding or dropping
+        old_indexes = self._current_indexes.copy()
+        old_storage = self._spaces_used
+
+        # Estimate initial costs (without the modification)
         self.initial_costs = self._estimate_workload_costs(queries)
         initial_total = sum(self.initial_costs)
 
+        # Apply the action (add or drop)
         if self._current_indexes[action] == 0:
+            # Adding an index
             candidate = self.candidates[action]
             required_space = self._get_candidate_size(candidate)
             if self._spaces_used + required_space > self.storage_budget:
@@ -194,32 +201,35 @@ class LocalIndexingEnv(gym.Env):
                 self._current_indexes[action] = 1
                 self._spaces_used += required_space
         else:
+            # Dropping an index
             candidate = self.candidates[action]
             size = self._get_candidate_size(candidate)
             self._current_indexes[action] = 0
             self._spaces_used -= size
 
+        # Estimate costs after modification
         current_costs = self._estimate_workload_costs(queries)
         current_total = sum(current_costs)
         self.last_costs = current_costs[:]
 
         used_storage = self._spaces_used
-        cost_saving = initial_total - current_total
+
+        # Common penalties
         storage_penalty = self.beta * (used_storage / self.storage_budget) ** 2
-        toggle_penalty = 0.1
+        toggle_penalty = 0.05  # reduced penalty for any toggle
 
-        if initial_total > 0:
-            reduction_ratio = (initial_total - current_total) / initial_total
+        # Different reward logic for add vs drop
+        if old_indexes[action] == 1:
+            # We dropped an index
+            cost_impact = current_total - initial_total  # positive if cost increased
+            # Penalize only if cost increased (index was useful)
+            penalty_cost = max(0, cost_impact)
+            bonus_drop = 0.1
+            reward = -penalty_cost - storage_penalty - toggle_penalty + bonus_drop
         else:
-            reduction_ratio = 0.0
-
-        active_count = np.sum(self._current_indexes)
-        if active_count > 0 and reduction_ratio < 0.01:
-            extra_penalty = 0.1 * (used_storage / self.storage_budget) * (active_count / self.n_candidates)
-        else:
-            extra_penalty = 0.0
-
-        reward = cost_saving - storage_penalty - toggle_penalty - extra_penalty
+            # We added an index
+            cost_saving = initial_total - current_total  # positive if cost decreased
+            reward = cost_saving - storage_penalty - toggle_penalty
 
         terminated = False
         truncated = False
