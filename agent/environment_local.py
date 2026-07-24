@@ -168,7 +168,7 @@ class LocalIndexingEnv(gym.Env):
         if action == no_op_action:
             current_costs = self.last_costs if hasattr(self, 'last_costs') else self.initial_costs
             current_total = sum(current_costs)
-            reward = 0.01
+            reward = 0.01  # small positive reward for doing nothing (stability)
             return self._get_obs(), reward, False, False, {
                 'costs': current_costs,
                 'total_cost': current_total,
@@ -222,14 +222,23 @@ class LocalIndexingEnv(gym.Env):
         if old_indexes[action] == 1:
             # We dropped an index
             cost_impact = current_total - initial_total  # positive if cost increased
-            # Penalize only if cost increased (index was useful)
-            penalty_cost = max(0, cost_impact)
-            bonus_drop = 0.1
+            # Penalize cost increase, but with a factor 0.5 to allow drops that free space
+            penalty_cost = max(0, 0.5 * cost_impact)
+            # Bonus for dropping (encourage exploration of drops)
+            bonus_drop = 0.2
+            # storage_penalty is computed on new used_storage (lower)
             reward = -penalty_cost - storage_penalty - toggle_penalty + bonus_drop
         else:
             # We added an index
-            cost_saving = initial_total - current_total  # positive if cost decreased
-            reward = cost_saving - storage_penalty - toggle_penalty
+            cost_saving = initial_total - current_total
+            reduction_ratio = cost_saving / max(initial_total, 1e-6)
+            # If reduction is small, penalize heavily
+            if reduction_ratio < 0.01:
+                # Extra penalty: proportional to space used and number of active indexes
+                extra_penalty = 0.5 * (used_storage / self.storage_budget) * (1 + np.sum(self._current_indexes))
+                reward = cost_saving - storage_penalty - toggle_penalty - extra_penalty
+            else:
+                reward = cost_saving - storage_penalty - toggle_penalty
 
         terminated = False
         truncated = False
