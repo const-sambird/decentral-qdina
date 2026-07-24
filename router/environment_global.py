@@ -106,7 +106,7 @@ class GlobalRoutingEnv(gym.Env):
         load_std = np.std(self._state_worker_loads) if self._state_worker_loads.size > 1 else 0.0
         load_penalty = 0.01 * load_std  # small penalty, can be tuned
 
-        reward = -makespan_scaled + jain_index - 0.01 * num_changes - load_penalty
+        reward = -makespan_scaled + jain_index*5 - 0.01 * num_changes - load_penalty
 
         if np.any(costs == 0.0) and np.sum(costs) > 0:
             reward -= 5.0

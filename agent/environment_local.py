@@ -9,7 +9,7 @@ class LocalIndexingEnv(gym.Env):
     def __init__(self, replica_id: int, hostname: str, port: int, user: str, password: str,
                  db_name:str, candidates: list, templates: list[int], 
                  n_templates: int, storage_budget: float,
-                 alpha: float = 10.0, beta: float = 2.0,
+                 alpha: float = 10.0, beta: float = 5.0,
                  agent_type: str = 'classical'):
         '''
         Local Environment for a single database replica managing its own indexes.
@@ -176,9 +176,6 @@ class LocalIndexingEnv(gym.Env):
                 'agent_mode': self.agent_type
             }
 
-        old_indexes = self._current_indexes.copy()
-        old_storage = self._spaces_used
-
         self.initial_costs = self._estimate_workload_costs(queries)
         initial_total = sum(self.initial_costs)
 
@@ -207,12 +204,22 @@ class LocalIndexingEnv(gym.Env):
         self.last_costs = current_costs[:]
 
         used_storage = self._spaces_used
-
         cost_saving = initial_total - current_total
         storage_penalty = self.beta * (used_storage / self.storage_budget) ** 2
         toggle_penalty = 0.1
 
-        reward = cost_saving - storage_penalty - toggle_penalty
+        if initial_total > 0:
+            reduction_ratio = (initial_total - current_total) / initial_total
+        else:
+            reduction_ratio = 0.0
+
+        active_count = np.sum(self._current_indexes)
+        if active_count > 0 and reduction_ratio < 0.01:
+            extra_penalty = 0.1 * (used_storage / self.storage_budget) * (active_count / self.n_candidates)
+        else:
+            extra_penalty = 0.0
+
+        reward = cost_saving - storage_penalty - toggle_penalty - extra_penalty
 
         terminated = False
         truncated = False

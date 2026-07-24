@@ -63,21 +63,31 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.last_valid_total_cost = {}
         self.last_valid_template_costs = {}
 
-        self.routing_change_interval = 5
+        self.routing_change_interval = 3
         self.steps_since_last_change = 0
 
 
-        template_counts = np.zeros(n_templates)
+    def initialize_routing_table(self):
+        """
+        Initialize the routing table by distributing templates evenly based
+        on their frequency in the workload (greedy load balancing).
+        """
+        template_counts = np.zeros(self.n_templates)
         for t_id in self.workload_templates_map:
             template_counts[t_id] += 1
 
         sorted_templates = np.argsort(template_counts)[::-1]
-        initial_routes = np.zeros(n_templates, dtype=np.int32)
-        for i, t in enumerate(sorted_templates):
-            initial_routes[t] = i % n_replicas
+        loads = np.zeros(self.n_replicas, dtype=np.int64)
+        initial_routes = np.zeros(self.n_templates, dtype=np.int32)
+
+        for t in sorted_templates:
+            replica = np.argmin(loads)
+            initial_routes[t] = replica
+            loads[replica] += template_counts[t]
 
         self.routing_table_state = initial_routes
         self.env._state_routes = initial_routes
+        print(f"[Router] Routing table initialized with loads: {loads}")
 
     def RegisterWorker(self, request, context):
         with self.lock:
@@ -116,8 +126,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     self.registered_workers[worker_id]['last_seen'] = time.time()
 
                 # Phase 1: episode end – wait for reset acknowledgments
-                # This entire block is commented out to disable the synchronization
-                # of episode resets. Workers will not be waiting for stop_training signals.
                 if self.stop_training_signal:
                     # Remove dead workers that haven't sent any request for more than 10 seconds.
                     now = time.time()
@@ -222,6 +230,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 # Get current state from the global environment.
                                 state = self.env._get_obs()
 
+                                # Decide whether to change routing or do nothing.
                                 self.steps_since_last_change += 1
                                 if self.steps_since_last_change >= self.routing_change_interval:
                                     action = self.agent.select_action(state, self.epsilon)
@@ -229,10 +238,37 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 else:
                                     action = 0  # do nothing
 
+                                # Compute current worker loads (number of queries per worker)
+                                # based on the current routing table and the workload pool.
+                                # Use explicit integer conversion and bounds checking.
+                                worker_loads_current = np.zeros(self.n_replicas, dtype=np.int32)
+                                for idx, q_text in enumerate(self.current_workload_pool):
+                                    template_id = self.workload_templates_map[idx]
+                                    # Ensure template_id is an integer and within bounds
+                                    try:
+                                        template_id = int(template_id)
+                                    except (TypeError, ValueError):
+                                        template_id = -1
+                                    if 0 <= template_id < self.n_templates:
+                                        # Ensure routing_table_state is a valid array and has the template_id
+                                        if isinstance(self.routing_table_state, np.ndarray) and \
+                                        len(self.routing_table_state) > template_id:
+                                            worker_id_assigned = int(self.routing_table_state[template_id])
+                                            if 0 <= worker_id_assigned < self.n_replicas:
+                                                worker_loads_current[worker_id_assigned] += 1
+                                            else:
+                                                print(f"[WARNING] Invalid worker id {worker_id_assigned} for template {template_id}")
+                                        else:
+                                            print(f"[WARNING] Routing table invalid for template {template_id}")
+                                    else:
+                                        print(f"[WARNING] Template id {template_id} out of range (0-{self.n_templates-1})")
+
+                                # Apply the action and update the environment with costs and loads.
                                 next_state, reward, _, _, info = self.env.step(
                                     action,
                                     external_costs=costs_array,
-                                    external_template_costs=template_costs_array
+                                    external_template_costs=template_costs_array,
+                                    worker_loads=worker_loads_current
                                 )
 
                                 # Update the routing table (which replica handles each template).
@@ -290,7 +326,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         self.lock.wait()
 
                 # After the loop, if the stop signal is active, tell the worker to stop.
-                # This block is also commented because we never set stop_training_signal.
                 if self.stop_training_signal:
                     return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
 

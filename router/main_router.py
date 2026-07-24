@@ -72,7 +72,8 @@ if __name__ == '__main__':
     servicer.execution_mode = args.mode
     servicer.current_workload_pool = initial_queries
     servicer.workload_templates_map = initial_map
-    
+    servicer.initialize_routing_table()
+
     # Start the gRPC server infrastructure
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     qdina_pb2_grpc.add_QDinaServiceServicer_to_server(servicer, server)
@@ -122,6 +123,7 @@ if __name__ == '__main__':
                 with servicer.lock:
                     servicer.current_workload_pool = current_queries
                     servicer.workload_templates_map = templates_map
+                    servicer.initialize_routing_table()
                 print("[Master Orchestrator] Workload configuration updated (Drift active).")
             
             while True:
