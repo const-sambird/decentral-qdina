@@ -7,10 +7,11 @@ from agent.cost_estimator import CostEstimator
 
 class LocalIndexingEnv(gym.Env):
     def __init__(self, replica_id: int, hostname: str, port: int, user: str, password: str,
-                 db_name:str, candidates: list, templates: list[int], 
+                 db_name: str, candidates: list, templates: list[int],
                  n_templates: int, storage_budget: float,
                  alpha: float = 10.0, beta: float = 1.0,
-                 agent_type: str = 'classical'):
+                 agent_type: str = 'classical',
+                 max_stagnation_steps: int = 15):
         '''
         Local Environment for a single database replica managing its own indexes.
         Follows the decentralized qDINA architecture where the state represents the incoming sub-workload.
@@ -24,17 +25,18 @@ class LocalIndexingEnv(gym.Env):
         self.password = password
         self.db_name = db_name
         self.candidates = candidates
-        self.n_candidates = len(self.candidates)                     # <-- nouveau
+        self.n_candidates = len(self.candidates)
         self.templates = templates
         self.n_templates = n_templates
         self.storage_budget = storage_budget
         self.alpha = alpha
         self.beta = beta
         self.agent_type = agent_type.lower()
-        
-        self.n_actions = self.n_candidates + 1  
+        self.max_stagnation_steps = max_stagnation_steps
+
+        self.n_actions = self.n_candidates + 1
         self.action_space = gym.spaces.Discrete(self.n_actions)
-        
+
         self.observation_space = gym.spaces.Box(
             low=0, high=1000,
             shape=(n_templates + self.n_candidates + n_templates,),
@@ -42,9 +44,9 @@ class LocalIndexingEnv(gym.Env):
         )
 
         self._current_indexes = np.zeros(self.n_candidates)
-        self.last_costs = [0.0] * n_templates  
+        self.last_costs = [0.0] * n_templates
         self._current_workload_state = np.zeros(self.n_templates, dtype=np.int32)
-        
+
         # Attributes for real storage budget management
         self._spaces_used = 0.0                     # total space used in bytes
         self._candidate_sizes = {}                  # cache for index sizes
@@ -55,6 +57,10 @@ class LocalIndexingEnv(gym.Env):
         self.penalty_toggle = 1e-6
         self.bonus_noop = 1e-3
 
+        # Stagnation tracking
+        self.best_cost_so_far = float('inf')
+        self.stagnation_counter = 0
+
     def _get_candidate_size(self, candidate) -> int:
         """
         Compute the real size (in bytes) of a candidate index using HypoPG.
@@ -63,11 +69,11 @@ class LocalIndexingEnv(gym.Env):
         """
         if candidate in self._candidate_sizes:
             return self._candidate_sizes[candidate]
-        
+
         table = candidate[0]
         columns = candidate[1]
         creation_string = f'CREATE INDEX candidate_index ON {table} ({", ".join(columns)})'
-        
+
         try:
             conn = self.db_replica.connection()
             with conn.cursor() as cur:
@@ -78,7 +84,7 @@ class LocalIndexingEnv(gym.Env):
                     size = cur.fetchone()[0]
                 except Exception:
                     print(f"[Worker {self.replica_id}] Warning: Unable to get size for candidate {candidate}. Using default size.")
-                    size = 5_000_000  
+                    size = 5_000_000
                 cur.execute('SELECT hypopg_drop_index(%s);' % virtual_oid)
                 conn.commit()
                 self._candidate_sizes[candidate] = size
@@ -103,10 +109,10 @@ class LocalIndexingEnv(gym.Env):
         conn_string = f"host={self.hostname} port={self.port} dbname={self.db_name} user={self.user} password={self.password}"
         estimator = CostEstimator(self.n_templates, conn_string, local_queue)
         p = Process(target=estimator.run, args=(queries, self.templates, active_indexes))
-        
+
         try:
             p.start()
-            costs = local_queue.get(timeout=120) 
+            costs = local_queue.get(timeout=120)
             p.join()
             return costs
         except Exception as e:
@@ -114,36 +120,33 @@ class LocalIndexingEnv(gym.Env):
             if p.is_alive():
                 p.terminate()
             return [100000.0] * self.n_templates
-            
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        
-        # try:
-        #     if self.candidates:
-        #         tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
-        #         if tables_to_clean:
-        #             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
-        # except Exception as db_err:
-        #     print(f"[Worker Environment {self.replica_id} Warning] Impossible de reset les index : {db_err}")
-        
+
         self._current_indexes = np.zeros(self.n_candidates)
         self._spaces_used = 0.0
-        
+
         incoming_queries = []
         if options and 'queries' in options:
             incoming_queries = options['queries']
-            
+
         self._current_workload_state = np.zeros(self.n_templates, dtype=np.int32)
         for q_idx in range(len(incoming_queries)):
             if q_idx < len(self.templates):
                 t_id = self.templates[q_idx]
                 if 0 <= t_id < self.n_templates:
                     self._current_workload_state[t_id] += 1
-                    
+
         self.initial_costs = self._estimate_workload_costs(incoming_queries)
-        self.last_costs = self.initial_costs[:] 
+        self.last_costs = self.initial_costs[:]
+
+        # Reset stagnation tracking
+        self.best_cost_so_far = sum(self.initial_costs)
+        self.stagnation_counter = 0
+
         return self._get_obs(), {'agent_mode': self.agent_type}
-        
+
     def step(self, action: int, queries=None):
         """
         Execute one local indexing action (add/drop) given a specific sub-workload slice.
@@ -152,6 +155,8 @@ class LocalIndexingEnv(gym.Env):
         - If it does not fit, the action is rejected (state unchanged) and the episode terminates.
         - The reward penalizes both performance loss and storage usage.
         - Index sizes are computed using HypoPG and cached for efficiency.
+        - If the cost does not improve for `max_stagnation_steps` and the current cost is still
+          significantly higher than the best cost seen, all indexes are cleared automatically.
         """
         if queries is None:
             queries = []
@@ -240,6 +245,26 @@ class LocalIndexingEnv(gym.Env):
             else:
                 reward = cost_saving - storage_penalty - toggle_penalty
 
+        # === Stagnation reset logic (conditional) ===
+        # Update best cost if improved (allow a tiny epsilon to avoid noise)
+        if current_total < self.best_cost_so_far - 1e-6:
+            self.best_cost_so_far = current_total
+            self.stagnation_counter = 0
+        else:
+            self.stagnation_counter += 1
+
+        # Reset only if we've stagnated for max_stagnation_steps AND current cost is still significantly higher than best
+        # (e.g., more than 1.5x the best cost). This avoids resetting when we already have a good configuration.
+        if (self.stagnation_counter >= self.max_stagnation_steps and
+            current_total > 1.5 * self.best_cost_so_far):
+            print(f"[Worker {self.replica_id}] Stagnation detected with high cost ({current_total:.2f}) vs best ({self.best_cost_so_far:.2f}), clearing all indexes.")
+            # Drop all active indexes
+            self._current_indexes[:] = 0
+            self._spaces_used = 0.0
+            # Reset best cost and counter to avoid immediate re-trigger
+            self.best_cost_so_far = current_total
+            self.stagnation_counter = 0
+
         terminated = False
         truncated = False
         return self._get_obs(), reward, terminated, truncated, {
@@ -248,7 +273,7 @@ class LocalIndexingEnv(gym.Env):
             'storage': used_storage,
             'agent_mode': self.agent_type
         }
-    
+
     def _get_obs(self):
         costs_norm = np.log10(np.array(self.last_costs, dtype=np.float32) + 1.0)
         return np.concatenate([
@@ -256,7 +281,7 @@ class LocalIndexingEnv(gym.Env):
             self._current_indexes.astype(np.float32),
             costs_norm
         ])
-    
+
     def get_active_index_names(self):
         """
         Returns the names of the currently active indexes based on the internal state.
