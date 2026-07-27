@@ -11,7 +11,7 @@ class LocalIndexingEnv(gym.Env):
                  n_templates: int, storage_budget: float,
                  alpha: float = 10.0, beta: float = 1.0,
                  agent_type: str = 'classical',
-                 max_stagnation_steps: int = 15):
+                 max_stagnation_steps: int = 10):
         '''
         Local Environment for a single database replica managing its own indexes.
         Follows the decentralized qDINA architecture where the state represents the incoming sub-workload.
@@ -173,7 +173,7 @@ class LocalIndexingEnv(gym.Env):
         if action == no_op_action:
             current_costs = self.last_costs if hasattr(self, 'last_costs') else self.initial_costs
             current_total = sum(current_costs)
-            reward = 0.01  # small positive reward for doing nothing (stability)
+            reward = 0.005  # small positive reward for doing nothing (stability)
             return self._get_obs(), reward, False, False, {
                 'costs': current_costs,
                 'total_cost': current_total,
@@ -222,6 +222,7 @@ class LocalIndexingEnv(gym.Env):
         # Common penalties
         storage_penalty = self.beta * (used_storage / self.storage_budget) ** 2
         toggle_penalty = 0.05  # reduced penalty for any toggle
+        active_index_penalty = 0.01 * np.sum(self._current_indexes)  # penalty for keeping many indexes
 
         # Different reward logic for add vs drop
         if old_indexes[action] == 1:
@@ -229,23 +230,22 @@ class LocalIndexingEnv(gym.Env):
             cost_impact = current_total - initial_total  # positive if cost increased
             # Penalize cost increase, but with a factor 0.5 to allow drops that free space
             penalty_cost = max(0, 0.5 * cost_impact)
-            # Bonus for dropping (encourage exploration of drops)
-            bonus_drop = 0.2
-            # storage_penalty is computed on new used_storage (lower)
-            reward = -penalty_cost - storage_penalty - toggle_penalty + bonus_drop
+            # Bonus for dropping (encourage exploration of drops) - increased
+            bonus_drop = 0.5
+            reward = -penalty_cost - storage_penalty - toggle_penalty - active_index_penalty + bonus_drop
         else:
             # We added an index
             cost_saving = initial_total - current_total
             reduction_ratio = cost_saving / max(initial_total, 1e-6)
             # If reduction is small, penalize heavily
             if reduction_ratio < 0.01:
-                # Extra penalty: proportional to space used and number of active indexes
-                extra_penalty = 0.5 * (used_storage / self.storage_budget) * (1 + np.sum(self._current_indexes))
-                reward = cost_saving - storage_penalty - toggle_penalty - extra_penalty
+                # Extra penalty: proportional to space used and number of active indexes (increased factor)
+                extra_penalty = 1.0 * (used_storage / self.storage_budget) * (1 + np.sum(self._current_indexes))
+                reward = cost_saving - storage_penalty - toggle_penalty - active_index_penalty - extra_penalty
             else:
-                reward = cost_saving - storage_penalty - toggle_penalty
+                reward = cost_saving - storage_penalty - toggle_penalty - active_index_penalty
 
-        # === Stagnation reset logic (conditional) ===
+        # === Stagnation reset logic (more aggressive) ===
         # Update best cost if improved (allow a tiny epsilon to avoid noise)
         if current_total < self.best_cost_so_far - 1e-6:
             self.best_cost_so_far = current_total
@@ -254,9 +254,9 @@ class LocalIndexingEnv(gym.Env):
             self.stagnation_counter += 1
 
         # Reset only if we've stagnated for max_stagnation_steps AND current cost is still significantly higher than best
-        # (e.g., more than 1.5x the best cost). This avoids resetting when we already have a good configuration.
+        # (e.g., more than 1.2x the best cost). This avoids resetting when we already have a good configuration.
         if (self.stagnation_counter >= self.max_stagnation_steps and
-            current_total > 1.5 * self.best_cost_so_far):
+            current_total > 1.2 * self.best_cost_so_far):
             print(f"[Worker {self.replica_id}] Stagnation detected with high cost ({current_total:.2f}) vs best ({self.best_cost_so_far:.2f}), clearing all indexes.")
             # Drop all active indexes
             self._current_indexes[:] = 0
