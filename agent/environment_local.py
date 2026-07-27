@@ -11,7 +11,7 @@ class LocalIndexingEnv(gym.Env):
                  n_templates: int, storage_budget: float,
                  alpha: float = 10.0, beta: float = 1.0,
                  agent_type: str = 'classical',
-                 max_stagnation_steps: int = 10):
+                 max_stagnation_steps: int = 20):
         '''
         Local Environment for a single database replica managing its own indexes.
         Follows the decentralized qDINA architecture where the state represents the incoming sub-workload.
@@ -141,9 +141,14 @@ class LocalIndexingEnv(gym.Env):
         self.initial_costs = self._estimate_workload_costs(incoming_queries)
         self.last_costs = self.initial_costs[:]
 
-        # Reset stagnation tracking
-        self.best_cost_so_far = sum(self.initial_costs)
+        # Reset stagnation counter only, keep best_cost_so_far
         self.stagnation_counter = 0
+        # Initialize best_cost_so_far if not set
+        if self.best_cost_so_far == float('inf'):
+            self.best_cost_so_far = sum(self.initial_costs)
+        else:
+            # Keep the best ever seen
+            pass
 
         return self._get_obs(), {'agent_mode': self.agent_type}
 
@@ -245,24 +250,25 @@ class LocalIndexingEnv(gym.Env):
             else:
                 reward = cost_saving - storage_penalty - toggle_penalty - active_index_penalty
 
-        # === Stagnation reset logic (more aggressive) ===
-        # Update best cost if improved (allow a tiny epsilon to avoid noise)
+        # === Stagnation reset logic (improved) ===
+        # Update best cost if improved
         if current_total < self.best_cost_so_far - 1e-6:
             self.best_cost_so_far = current_total
             self.stagnation_counter = 0
         else:
             self.stagnation_counter += 1
 
-        # Reset only if we've stagnated for max_stagnation_steps AND current cost is still significantly higher than best
-        # (e.g., more than 1.2x the best cost). This avoids resetting when we already have a good configuration.
+        # Reset only if:
+        # 1) We have stagnated for max_stagnation_steps
+        # 2) Current cost is significantly higher than the best ever seen ( > 2.5x )
+        # This avoids resetting when we already have a good configuration.
         if (self.stagnation_counter >= self.max_stagnation_steps and
-            current_total > 1.2 * self.best_cost_so_far):
+            current_total > 2.5 * self.best_cost_so_far):
             print(f"[Worker {self.replica_id}] Stagnation detected with high cost ({current_total:.2f}) vs best ({self.best_cost_so_far:.2f}), clearing all indexes.")
             # Drop all active indexes
             self._current_indexes[:] = 0
             self._spaces_used = 0.0
-            # Reset best cost and counter to avoid immediate re-trigger
-            self.best_cost_so_far = current_total
+            # Reset counter, but keep best_cost_so_far unchanged
             self.stagnation_counter = 0
 
         terminated = False
