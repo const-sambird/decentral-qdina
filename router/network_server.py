@@ -250,10 +250,10 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 table_str = " ".join(str(int(node)) for node in self.routing_table_state)
                                 print(f"[Router State] Table : [{table_str}]")
                                 print(f"[Router Learn] Step {self.global_step_counter:2d} | "
-                                    f"Makespan: {float(np.max(costs_array)):14.2f} | "
+                                    f"Makespan: {'{:,}'.format(int(np.max(costs_array))).replace(',', ' '):>18} | "
                                     f"Jain Index: {info.get('jain_index', 1.0):.4f} | "
                                     f"Reward: {reward:15.2f} | "
-                                    f"Epsilon: {max(0.2, self.epsilon * 0.999):.3f} | "
+                                    f"Epsilon: {self.epsilon:.3f} | "
                                     f"Workers: {len(sorted_workers)}")
 
                                 # Store the experience in the replay memory for training.
