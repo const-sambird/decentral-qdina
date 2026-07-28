@@ -11,7 +11,7 @@ class LocalIndexingEnv(gym.Env):
                  n_templates: int, storage_budget: float,
                  alpha: float = 10.0, beta: float = 1.0,
                  agent_type: str = 'classical',
-                 max_stagnation_steps: int = 15,
+                 max_stagnation_steps: int = 5,
                  max_index_age: int = 5):
         '''
         Local Environment for a single database replica managing its own indexes.
