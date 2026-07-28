@@ -212,7 +212,7 @@ class LocalIndexingEnv(gym.Env):
 
         used_storage = self._spaces_used
 
-        # --- Simplified reward ---
+        # --- Improved reward with non-linear scaling for huge costs ---
         storage_penalty = self.beta * (used_storage / self.storage_budget) ** 2
         active_count = np.sum(self._current_indexes)
         active_index_penalty = 0.05 * active_count
@@ -225,26 +225,37 @@ class LocalIndexingEnv(gym.Env):
             normalized_cost_saving = 0.0
             normalized_cost_impact = 0.0
 
+        # Non-linear transformation to heavily penalize cost increases and reward decreases
         if old_indexes[action] == 1:
-            penalty_cost = max(0, 0.2 * normalized_cost_impact)
+            # Dropping an index
+            if normalized_cost_impact > 0:
+                # Quadratic penalty: (1 + impact)^2 - 1
+                penalty_cost = (1.0 + normalized_cost_impact) ** 2 - 1.0
+            else:
+                # If cost decreased (rare), small reward
+                penalty_cost = -0.1 * normalized_cost_saving
             bonus_drop = 1.0
             reward = -penalty_cost - storage_penalty - toggle_penalty - active_index_penalty + bonus_drop
         else:
+            # Adding an index
             if normalized_cost_saving > 0.01:
-                reward = normalized_cost_saving - storage_penalty - toggle_penalty - active_index_penalty
+                # Reward using log to keep it bounded
+                reward = np.log1p(normalized_cost_saving) - storage_penalty - toggle_penalty - active_index_penalty
             else:
-                reward = normalized_cost_saving - storage_penalty - toggle_penalty - active_index_penalty - 1.0
+                if normalized_cost_impact > 0:
+                    penalty_cost = (1.0 + normalized_cost_impact) ** 2 - 1.0
+                else:
+                    penalty_cost = 0.0
+                reward = -penalty_cost - storage_penalty - toggle_penalty - active_index_penalty
 
         # === Stagnation reset logic ===
-        # Only consider improvements greater than 1% of best cost
+        # Only consider improvements greater than 5% of best cost
         if self.best_cost_so_far is not None and self.best_cost_so_far > 0:
             improvement_ratio = (self.best_cost_so_far - current_total) / self.best_cost_so_far
-            if improvement_ratio > 0.01:
-                # Significant improvement
+            if improvement_ratio > 0.05:
                 self.best_cost_so_far = current_total
                 self.stagnation_counter = 0
             else:
-                # No significant improvement
                 self.stagnation_counter += 1
         else:
             if self.best_cost_so_far is None:
