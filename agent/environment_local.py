@@ -218,17 +218,22 @@ class LocalIndexingEnv(gym.Env):
         active_index_penalty = 0.05 * active_count
         toggle_penalty = 0.02
 
+        if initial_total > 0:
+            normalized_cost_saving = (initial_total - current_total) / initial_total
+            normalized_cost_impact = (current_total - initial_total) / initial_total
+        else:
+            normalized_cost_saving = 0.0
+            normalized_cost_impact = 0.0
+
         if old_indexes[action] == 1:
-            cost_impact = current_total - initial_total
-            penalty_cost = max(0, 0.2 * cost_impact)
+            penalty_cost = max(0, 0.2 * normalized_cost_impact)
             bonus_drop = 1.0
             reward = -penalty_cost - storage_penalty - toggle_penalty - active_index_penalty + bonus_drop
         else:
-            cost_saving = initial_total - current_total
-            if cost_saving > 0:
-                reward = cost_saving - storage_penalty - toggle_penalty - active_index_penalty
+            if normalized_cost_saving > 0.01:
+                reward = normalized_cost_saving - storage_penalty - toggle_penalty - active_index_penalty
             else:
-                reward = cost_saving - storage_penalty - toggle_penalty - active_index_penalty - 1.0
+                reward = normalized_cost_saving - storage_penalty - toggle_penalty - active_index_penalty - 1.0
 
         # === Stagnation reset logic ===
         # Only consider improvements greater than 1% of best cost
