@@ -11,7 +11,7 @@ class LocalIndexingEnv(gym.Env):
                  n_templates: int, storage_budget: float,
                  alpha: float = 10.0, beta: float = 1.0,
                  agent_type: str = 'classical',
-                 max_stagnation_steps: int = 10,
+                 max_stagnation_steps: int = 8,
                  max_index_age: int = 5):
         '''
         Local Environment for a single database replica managing its own indexes.
@@ -50,8 +50,8 @@ class LocalIndexingEnv(gym.Env):
         self._current_workload_state = np.zeros(self.n_templates, dtype=np.int32)
 
         # Attributes for real storage budget management
-        self._spaces_used = 0.0                     # total space used in bytes
-        self._candidate_sizes = {}                  # cache for index sizes
+        self._spaces_used = 0.0
+        self._candidate_sizes = {}
 
         self.db_replica = Replica(self.replica_id, self.hostname, self.port, self.db_name, self.user, self.password)
         self.initial_costs = [0 for _ in range(self.n_templates)]
@@ -60,18 +60,13 @@ class LocalIndexingEnv(gym.Env):
         self.bonus_noop = 1e-3
 
         # Stagnation tracking
-        self.best_cost_so_far = None   # will be set in reset
+        self.best_cost_so_far = None
         self.stagnation_counter = 0
 
         # Index age tracking (for forced drop)
         self.index_age = np.zeros(self.n_candidates, dtype=np.int32)
 
     def _get_candidate_size(self, candidate) -> int:
-        """
-        Compute the real size (in bytes) of a candidate index using HypoPG.
-        The result is cached to avoid repeated database calls.
-        This follows the approach used in the original DINA/qDINA environment.
-        """
         if candidate in self._candidate_sizes:
             return self._candidate_sizes[candidate]
 
@@ -156,16 +151,6 @@ class LocalIndexingEnv(gym.Env):
         return self._get_obs(), {'agent_mode': self.agent_type}
 
     def step(self, action: int, queries=None):
-        """
-        Execute one local indexing action (add/drop) given a specific sub-workload slice.
-        This version implements a hard storage budget constraint similar to the original qDINA:
-        - Before adding an index, we check if the required space fits in the remaining budget.
-        - If it does not fit, the action is rejected (state unchanged) and the episode terminates.
-        - The reward penalizes both performance loss and storage usage.
-        - Index sizes are computed using HypoPG and cached for efficiency.
-        - If the cost does not improve for `max_stagnation_steps`, all indexes are cleared to force exploration.
-        - Individual indexes older than `max_index_age` are also dropped if they don't improve cost.
-        """
         if queries is None:
             queries = []
 
@@ -178,14 +163,12 @@ class LocalIndexingEnv(gym.Env):
 
         # --- Forced drop of old indexes (if no cost improvement) ---
         if self.best_cost_so_far is not None and self.best_cost_so_far > 0:
-            # Increment age of active indexes
             for i in range(self.n_candidates):
                 if self._current_indexes[i] == 1:
                     self.index_age[i] += 1
                 else:
                     self.index_age[i] = 0
 
-            # If an index is too old and current cost is not improving, drop it forcibly
             for i in range(self.n_candidates):
                 if (self._current_indexes[i] == 1 and
                     self.index_age[i] >= self.max_index_age and
@@ -200,7 +183,7 @@ class LocalIndexingEnv(gym.Env):
         if action == no_op_action:
             current_costs = self.last_costs if hasattr(self, 'last_costs') else self.initial_costs
             current_total = sum(current_costs)
-            reward = 0.0   # no benefit, no penalty
+            reward = 0.0
             return self._get_obs(), reward, False, False, {
                 'costs': current_costs,
                 'total_cost': current_total,
@@ -208,17 +191,13 @@ class LocalIndexingEnv(gym.Env):
                 'agent_mode': self.agent_type
             }
 
-        # Save old state to know if we are adding or dropping
         old_indexes = self._current_indexes.copy()
         old_storage = self._spaces_used
 
-        # Estimate initial costs (without the modification)
         self.initial_costs = self._estimate_workload_costs(queries)
         initial_total = sum(self.initial_costs)
 
-        # Apply the action (add or drop)
         if self._current_indexes[action] == 0:
-            # Adding an index
             candidate = self.candidates[action]
             required_space = self._get_candidate_size(candidate)
             if self._spaces_used + required_space > self.storage_budget:
@@ -234,14 +213,12 @@ class LocalIndexingEnv(gym.Env):
                 self._spaces_used += required_space
                 self.index_age[action] = 0
         else:
-            # Dropping an index
             candidate = self.candidates[action]
             size = self._get_candidate_size(candidate)
             self._current_indexes[action] = 0
             self._spaces_used -= size
             self.index_age[action] = 0
 
-        # Estimate costs after modification
         current_costs = self._estimate_workload_costs(queries)
         current_total = sum(current_costs)
         self.last_costs = current_costs[:]
@@ -266,26 +243,29 @@ class LocalIndexingEnv(gym.Env):
             else:
                 reward = cost_saving - storage_penalty - toggle_penalty - active_index_penalty - 1.0
 
-        # === Stagnation reset logic (FORCED drop all indexes) ===
-        # Update best cost if improved
-        if self.best_cost_so_far is not None and current_total < self.best_cost_so_far - 1e-6:
-            self.best_cost_so_far = current_total
-            self.stagnation_counter = 0
-        elif self.best_cost_so_far is not None:
-            self.stagnation_counter += 1
+        # === Stagnation reset logic with relative improvement threshold ===
+        improvement_threshold = 0.01  # 1% improvement required to reset counter
+        if self.best_cost_so_far is not None and self.best_cost_so_far > 0:
+            improvement_ratio = (self.best_cost_so_far - current_total) / self.best_cost_so_far
+            if improvement_ratio > improvement_threshold:
+                # Significant improvement
+                self.best_cost_so_far = current_total
+                self.stagnation_counter = 0
+            else:
+                # No significant improvement
+                self.stagnation_counter += 1
+        else:
+            if self.best_cost_so_far is None:
+                self.best_cost_so_far = current_total
 
         # Reset if we have stagnated for max_stagnation_steps
-        # (No ratio condition, because we want to force exploration when cost is not improving)
         if (self.best_cost_so_far is not None and self.best_cost_so_far > 0 and
             self.stagnation_counter >= self.max_stagnation_steps):
-            # Avoid resetting if the cost is already very low (good configuration)
-            # But here cost is huge, so we reset unconditionally.
-            print(f"[Worker {self.replica_id}] Stagnation detected (no cost improvement for {self.max_stagnation_steps} steps), clearing all indexes.")
+            print(f"[Worker {self.replica_id}] Stagnation detected (no significant improvement for {self.max_stagnation_steps} steps), clearing all indexes.")
             self._current_indexes[:] = 0
             self._spaces_used = 0.0
             self.index_age[:] = 0
             self.stagnation_counter = 0
-            # Reset best cost to current total to allow new exploration
             self.best_cost_so_far = current_total
 
         terminated = False
@@ -306,9 +286,6 @@ class LocalIndexingEnv(gym.Env):
         ])
 
     def get_active_index_names(self):
-        """
-        Returns the names of the currently active indexes based on the internal state.
-        """
         active_indexes = []
         for idx_pos, val in enumerate(self._current_indexes):
             if val == 1:
