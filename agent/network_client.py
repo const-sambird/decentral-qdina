@@ -50,7 +50,7 @@ class QDinaNetworkClient:
         self.optimizer = None
         self.loss_fn = nn.MSELoss()
         
-        self.local_memory = ReplayMemory(capacity=10000)
+        self.local_memory = ReplayMemory(capacity=50000)
         self.batch_size = 16
         self.gamma = 0.99
         self.epsilon = 1.0

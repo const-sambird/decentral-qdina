@@ -40,7 +40,8 @@ class GlobalRoutingEnv(gym.Env):
         return template_idx, target_replica
 
     def _get_obs(self):
-        return np.concatenate([self._state_routes, self._state_costs])
+        costs_norm = np.log10(np.array(self.last_costs, dtype=np.float32) + 1.0)
+        return np.concatenate([self._current_workload_state, self._current_indexes, costs_norm])
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
