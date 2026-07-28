@@ -11,7 +11,7 @@ class LocalIndexingEnv(gym.Env):
                  n_templates: int, storage_budget: float,
                  alpha: float = 10.0, beta: float = 1.0,
                  agent_type: str = 'classical',
-                 max_stagnation_steps: int = 25,
+                 max_stagnation_steps: int = 15,
                  max_index_age: int = 5):
         '''
         Local Environment for a single database replica managing its own indexes.
@@ -178,8 +178,7 @@ class LocalIndexingEnv(gym.Env):
                 if 0 <= t_id < self.n_templates:
                     self._current_workload_state[t_id] += 1
 
-        # --- Forced drop of old inactive indexes (if no cost improvement) ---
-        # This is done before the action to allow the agent to learn that dropping is beneficial.
+        # --- Forced drop of old indexes (if no cost improvement) ---
         if self.best_cost_so_far is not None and self.best_cost_so_far > 0:
             # Increment age of active indexes
             for i in range(self.n_candidates):
@@ -279,21 +278,25 @@ class LocalIndexingEnv(gym.Env):
                 # If the cost increased, penalize heavily
                 reward = cost_saving - storage_penalty - toggle_penalty - active_index_penalty - 1.0
 
-        # === Stagnation reset logic (unchanged) ===
+        # === Stagnation reset logic (forced drop all indexes) ===
+        # Update best cost if improved
         if self.best_cost_so_far is not None and current_total < self.best_cost_so_far - 1e-6:
             self.best_cost_so_far = current_total
             self.stagnation_counter = 0
         elif self.best_cost_so_far is not None:
             self.stagnation_counter += 1
 
+        # Reset if we have stagnated and current cost is much higher than best (> 1.5x)
         if (self.best_cost_so_far is not None and self.best_cost_so_far > 0 and
             self.stagnation_counter >= self.max_stagnation_steps and
-            current_total > 2.0 * self.best_cost_so_far):
+            current_total > 1.5 * self.best_cost_so_far):
             print(f"[Worker {self.replica_id}] Stagnation detected with high cost ({current_total:.2f}) vs best ({self.best_cost_so_far:.2f}), clearing all indexes.")
             self._current_indexes[:] = 0
             self._spaces_used = 0.0
             self.index_age[:] = 0
             self.stagnation_counter = 0
+            # Reset best cost to current total to allow new exploration from this baseline
+            self.best_cost_so_far = current_total
 
         terminated = False
         truncated = False

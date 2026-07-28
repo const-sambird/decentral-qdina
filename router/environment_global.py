@@ -113,7 +113,7 @@ class GlobalRoutingEnv(gym.Env):
         load_cv = std_load / mean_load
         load_imbalance_penalty = 0.3 * load_cv 
 
-        change_penalty = 0.01 * num_changes
+        change_penalty = 0.1 * num_changes
 
         reward = -makespan_scaled - cost_imbalance_penalty - load_imbalance_penalty - change_penalty
 
