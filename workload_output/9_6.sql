@@ -1,4 +1,4 @@
--- using 6579422154 as a seed to the RNG
+-- using 6082775906 as a seed to the RNG
 
 
 select
@@ -25,7 +25,7 @@ from
 			and p_partkey = l_partkey
 			and o_orderkey = l_orderkey
 			and s_nationkey = n_nationkey
-			and p_name like '%purple%'
+			and p_name like '%tomato%'
 	) as profit
 group by
 	nation,
@@ -33,3 +33,5 @@ group by
 order by
 	nation,
 	o_year desc;
+
+

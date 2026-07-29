@@ -1,10 +1,10 @@
--- using 6579422158 as a seed to the RNG
+-- using 6082775910 as a seed to the RNG
 
 
 select
 	o_year,
 	sum(case
-		when nation = 'IRAN' then volume
+		when nation = 'EGYPT' then volume
 		else 0
 	end) / sum(volume) as mkt_share
 from
@@ -32,9 +32,11 @@ from
 			and r_name = 'MIDDLE EAST'
 			and s_nationkey = n2.n_nationkey
 			and o_orderdate between date '1995-01-01' and date '1996-12-31'
-			and p_type = 'MEDIUM BRUSHED NICKEL'
+			and p_type = 'ECONOMY ANODIZED NICKEL'
 	) as all_nations
 group by
 	o_year
 order by
 	o_year;
+
+

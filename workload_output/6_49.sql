@@ -1,4 +1,4 @@
--- using 6579422197 as a seed to the RNG
+-- using 6082775949 as a seed to the RNG
 
 
 select
@@ -8,5 +8,7 @@ from
 where
 	l_shipdate >= date '1993-01-01'
 	and l_shipdate < date '1993-01-01' + interval '1' year
-	and l_discount between 0.09 - 0.01 and 0.09 + 0.01
+	and l_discount between 0.05 - 0.01 and 0.05 + 0.01
 	and l_quantity < 25;
+
+

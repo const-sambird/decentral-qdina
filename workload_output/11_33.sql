@@ -1,4 +1,4 @@
--- using 6579422181 as a seed to the RNG
+-- using 6082775933 as a seed to the RNG
 
 
 select
@@ -11,7 +11,7 @@ from
 where
 	ps_suppkey = s_suppkey
 	and s_nationkey = n_nationkey
-	and n_name = 'JORDAN'
+	and n_name = 'ETHIOPIA'
 group by
 	ps_partkey having
 		sum(ps_supplycost * ps_availqty) > (
@@ -24,7 +24,9 @@ group by
 			where
 				ps_suppkey = s_suppkey
 				and s_nationkey = n_nationkey
-				and n_name = 'JORDAN'
+				and n_name = 'ETHIOPIA'
 		)
 order by
 	value desc;
+
+
