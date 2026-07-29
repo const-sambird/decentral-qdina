@@ -9,7 +9,7 @@ class LocalIndexingEnv(gym.Env):
     def __init__(self, replica_id: int, hostname: str, port: int, user: str, password: str,
                  db_name: str, candidates: list, templates: list[int],
                  n_templates: int, storage_budget: float,
-                 alpha: float = 10.0, beta: float = 1.0,
+                 alpha: float = 10.0, beta: float = 0.5,
                  agent_type: str = 'classical',
                  max_stagnation_steps: int = 10):
         '''
@@ -60,6 +60,10 @@ class LocalIndexingEnv(gym.Env):
         # Stagnation tracking
         self.best_cost_so_far = None
         self.stagnation_counter = 0
+
+        # Best configuration memory
+        self.best_indexes = None
+        self.best_cost = float('inf')
 
     def _get_candidate_size(self, candidate) -> int:
         """
@@ -146,12 +150,17 @@ class LocalIndexingEnv(gym.Env):
         if self.best_cost_so_far is None:
             self.best_cost_so_far = current_total if current_total > 0 else None
 
+        # Reset best configuration memory
+        self.best_indexes = None
+        self.best_cost = float('inf')
+
         return self._get_obs(), {'agent_mode': self.agent_type}
 
     def step(self, action: int, queries=None):
         """
         Execute one local indexing action (add/drop) given a specific sub-workload slice.
         If the cost does not improve significantly for `max_stagnation_steps`, all indexes are cleared.
+        Best configurations are memorized and can be restored if stagnation occurs.
         """
         if queries is None:
             queries = []
@@ -168,7 +177,11 @@ class LocalIndexingEnv(gym.Env):
         if action == no_op_action:
             current_costs = self.last_costs if hasattr(self, 'last_costs') else self.initial_costs
             current_total = sum(current_costs)
-            reward = 0.0
+            # Reward for stability: bonus if current configuration is good
+            if self.best_cost_so_far is not None and current_total <= 1.5 * self.best_cost_so_far:
+                reward = 0.5
+            else:
+                reward = -0.1
             return self._get_obs(), reward, False, False, {
                 'costs': current_costs,
                 'total_cost': current_total,
@@ -186,6 +199,7 @@ class LocalIndexingEnv(gym.Env):
 
         # Apply the action (add or drop)
         if self._current_indexes[action] == 0:
+            # Adding an index
             candidate = self.candidates[action]
             required_space = self._get_candidate_size(candidate)
             if self._spaces_used + required_space > self.storage_budget:
@@ -200,6 +214,7 @@ class LocalIndexingEnv(gym.Env):
                 self._current_indexes[action] = 1
                 self._spaces_used += required_space
         else:
+            # Dropping an index
             candidate = self.candidates[action]
             size = self._get_candidate_size(candidate)
             self._current_indexes[action] = 0
@@ -212,7 +227,7 @@ class LocalIndexingEnv(gym.Env):
 
         used_storage = self._spaces_used
 
-        # --- Improved reward with non-linear scaling for huge costs ---
+        # Improved reward with non-linear scaling for huge costs
         storage_penalty = self.beta * (used_storage / self.storage_budget) ** 2
         active_count = np.sum(self._current_indexes)
         active_index_penalty = 0.05 * active_count
@@ -248,11 +263,17 @@ class LocalIndexingEnv(gym.Env):
                     penalty_cost = 0.0
                 reward = -penalty_cost - storage_penalty - toggle_penalty - active_index_penalty
 
-        # === Stagnation reset logic ===
-        # Only consider improvements greater than 5% of best cost
+        # Best configuration memory
+        if current_total < self.best_cost:
+            self.best_cost = current_total
+            self.best_indexes = self._current_indexes.copy()
+
+        # Stagnation reset logic
+        # Only consider improvements greater than 2% of best cost
+        improvement_threshold = 0.02
         if self.best_cost_so_far is not None and self.best_cost_so_far > 0:
             improvement_ratio = (self.best_cost_so_far - current_total) / self.best_cost_so_far
-            if improvement_ratio > 0.05:
+            if improvement_ratio > improvement_threshold:
                 self.best_cost_so_far = current_total
                 self.stagnation_counter = 0
             else:
@@ -264,11 +285,21 @@ class LocalIndexingEnv(gym.Env):
         # Reset if we have stagnated for max_stagnation_steps
         if (self.best_cost_so_far is not None and self.best_cost_so_far > 0 and
             self.stagnation_counter >= self.max_stagnation_steps):
-            print(f"[Worker {self.replica_id}] Stagnation detected (no significant improvement for {self.max_stagnation_steps} steps), clearing all indexes.")
-            self._current_indexes[:] = 0
-            self._spaces_used = 0.0
-            self.stagnation_counter = 0
-            self.best_cost_so_far = current_total
+            # If we have a saved best configuration and current cost is much worse, restore it
+            if (self.best_indexes is not None and
+                current_total > 2.0 * self.best_cost and
+                self.best_cost < current_total):
+                print(f"[Worker {self.replica_id}] Restoring best configuration with cost {self.best_cost:.2f} (current: {current_total:.2f})")
+                self._current_indexes = self.best_indexes.copy()
+                self._spaces_used = self._compute_storage_from_indexes()
+                # We don't reset best_cost_so_far because we want to keep the best seen
+                self.stagnation_counter = 0
+            else:
+                print(f"[Worker {self.replica_id}] Stagnation detected (no significant improvement for {self.max_stagnation_steps} steps), clearing all indexes.")
+                self._current_indexes[:] = 0
+                self._spaces_used = 0.0
+                self.stagnation_counter = 0
+                self.best_cost_so_far = current_total
 
         terminated = False
         truncated = False
@@ -278,6 +309,17 @@ class LocalIndexingEnv(gym.Env):
             'storage': used_storage,
             'agent_mode': self.agent_type
         }
+
+    def _compute_storage_from_indexes(self):
+        """Compute the storage used by the current set of active indexes."""
+        total = 0.0
+        for i, val in enumerate(self._current_indexes):
+            if val == 1:
+                candidate = self.candidates[i]
+                # Use cached size or compute it
+                size = self._candidate_sizes.get(candidate, 5_000_000)
+                total += size
+        return total
 
     def _get_obs(self):
         costs_norm = np.log10(np.array(self.last_costs, dtype=np.float32) + 1.0)
