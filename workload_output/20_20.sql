@@ -1,4 +1,4 @@
--- using 6082775920 as a seed to the RNG
+-- using 6579422168 as a seed to the RNG
 
 
 select
@@ -12,31 +12,35 @@ where
 		select
 			ps_suppkey
 		from
-			partsupp
+			partsupp,
+			(
+				select
+					l_partkey agg_partkey,
+					l_suppkey agg_suppkey,
+					0.5 * sum(l_quantity) AS agg_quantity
+				from
+					lineitem
+				where
+					l_shipdate >= date '1993-01-01'
+					and l_shipdate < date '1993-01-01' + interval '1' year
+				group by
+					l_partkey,
+					l_suppkey
+			) agg_lineitem
 		where
-			ps_partkey in (
+			agg_partkey = ps_partkey
+			and agg_suppkey = ps_suppkey
+			and ps_partkey in (
 				select
 					p_partkey
 				from
 					part
 				where
-					p_name like 'grey%'
+					p_name like 'coral%'
 			)
-			and ps_availqty > (
-				select
-					0.5 * sum(l_quantity)
-				from
-					lineitem
-				where
-					l_partkey = ps_partkey
-					and l_suppkey = ps_suppkey
-					and l_shipdate >= date '1994-01-01'
-					and l_shipdate < date '1994-01-01' + interval '1' year
-			)
+			and ps_availqty > agg_quantity
 	)
 	and s_nationkey = n_nationkey
-	and n_name = 'MOROCCO'
+	and n_name = 'IRAQ'
 order by
 	s_name;
-
-

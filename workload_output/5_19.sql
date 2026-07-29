@@ -1,4 +1,4 @@
--- using 6082775919 as a seed to the RNG
+-- using 6579422167 as a seed to the RNG
 
 
 select
@@ -18,12 +18,10 @@ where
 	and c_nationkey = s_nationkey
 	and s_nationkey = n_nationkey
 	and n_regionkey = r_regionkey
-	and r_name = 'MIDDLE EAST'
+	and r_name = 'AFRICA'
 	and o_orderdate >= date '1996-01-01'
 	and o_orderdate < date '1996-01-01' + interval '1' year
 group by
 	n_name
 order by
 	revenue desc;
-
-
