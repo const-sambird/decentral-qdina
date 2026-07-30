@@ -115,7 +115,7 @@ class GlobalRoutingEnv(gym.Env):
 
         change_penalty = 0.1 * num_changes
 
-        reward = -makespan_scaled - cost_imbalance_penalty - load_imbalance_penalty - change_penalty
+        reward = -makespan_scaled - 0.5 * cost_imbalance_penalty - 0.3 * load_imbalance_penalty - change_penalty
 
         if np.any(costs == 0.0) and np.sum(costs) > 0:
             reward -= 5.0
