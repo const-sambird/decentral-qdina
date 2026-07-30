@@ -145,7 +145,7 @@ if __name__ == '__main__':
                 with servicer.lock:
                     if not servicer.stop_training_signal:
                         break
-                time.sleep(0.1)
+                time.sleep(0.5)
             print("[Master Orchestrator] All workers have reset. Proceeding to next episode.")
  
             servicer.agent.target_net.load_state_dict(servicer.agent.policy_net.state_dict())
