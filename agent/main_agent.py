@@ -11,7 +11,7 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, default='quantum', choices=['classical', 'quantum'], help="Execution model type")
     parser.add_argument('--server', type=str, default='localhost:50051', help="Master router gRPC server network address")
     parser.add_argument('--config', type=str, default='replicas.csv', help="Path to the replicas configuration CSV file")
-    
+    parser.add_argument('--budget-mode', type=str, default='enforce', choices=['enforce', 'ignore'], help="Budget enforcement mode: 'enforce' (hard cap) or 'ignore' (no cap, only penalty).")
     args = parser.parse_args()
     
     # Load settings from CSV
@@ -32,6 +32,7 @@ if __name__ == '__main__':
         replica_id=args.id, 
         server_address=args.server, 
         agent_mode=args.mode,
+        budget_mode=args.budget_mode,
         db_host=cfg['hostname'],
         db_port=cfg['port'],
         db_user=cfg['user'],

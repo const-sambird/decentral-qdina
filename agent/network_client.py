@@ -24,7 +24,7 @@ from common.profiling import Profiler
 class QDinaNetworkClient:
     def __init__(self, replica_id: int, server_address: str, agent_mode: str, 
                  db_host: str, db_port: int, db_user: str, db_password: str, 
-                 db_name: str, storage_budget: float = 10.0):
+                 db_name: str, budget_mode: str, storage_budget: float = 10.0):
         '''
         Decentralized gRPC Client worker orchestrating local reinforcement learning indexing.
         '''
@@ -36,6 +36,7 @@ class QDinaNetworkClient:
         self.db_user = db_user
         self.db_password = db_password
         self.db_name = db_name
+        self.budget_mode = budget_mode
         
         print(f"[Worker Client {self.replica_id}] Linking gRPC channel to {server_address}...")
         self.channel = grpc.insecure_channel(server_address)
@@ -235,7 +236,7 @@ class QDinaNetworkClient:
                 user=self.db_user, password=self.db_password, db_name=self.db_name,
                 candidates=self.candidates, templates=self.templates_map,
                 n_templates=self.n_templates, storage_budget=self.storage_budget,
-                agent_type=self.agent_mode
+                agent_type=self.agent_mode, budget_mode=self.budget_mode
             )
             
         self._init_agent_networks()
@@ -308,12 +309,16 @@ class QDinaNetworkClient:
                 current_cost_tracker = info.get('total_cost', 0.0)
                 current_storage_usage = info.get('storage', 0.0)
 
-                if 'costs_knapsack' in info and info['costs_knapsack']:
-                    costs_per_template = [float(c) for c in info['costs_knapsack']]
-                elif 'costs' in info:
-                    costs_per_template = [float(c) for c in info['costs']]
-                else:
-                    costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
+                if self.budget_mode == 'enforce':
+                    if 'costs' in info:
+                        costs_per_template = [float(c) for c in info['costs']]
+                    else:
+                        costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
+                elif self.budget_mode == 'ignore':
+                    if 'costs_knapsack' in info and info['costs_knapsack']:
+                        costs_per_template = [float(c) for c in info['costs_knapsack']]
+                    else:
+                        costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
                 
                 storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
                 print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.2f}")

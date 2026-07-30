@@ -8,7 +8,7 @@ from agent.cost_estimator import CostEstimator
 class LocalIndexingEnv(gym.Env):
     def __init__(self, replica_id: int, hostname: str, port: int, user: str, password: str,
                  db_name: str, candidates: list, templates: list[int],
-                 n_templates: int, storage_budget: float,
+                 n_templates: int, budget_mode: str ,storage_budget: float,
                  alpha: float = 10.0, beta: float = 0.5,
                  agent_type: str = 'classical',
                  max_stagnation_steps: int = 10):
@@ -33,6 +33,7 @@ class LocalIndexingEnv(gym.Env):
         self.beta = beta
         self.agent_type = agent_type.lower()
         self.max_stagnation_steps = max_stagnation_steps
+        self.budget_mode = budget_mode
 
         self.n_actions = self.n_candidates + 1
         self.action_space = gym.spaces.Discrete(self.n_actions)
@@ -177,6 +178,7 @@ class LocalIndexingEnv(gym.Env):
 
         no_op_action = self.n_actions - 1
 
+        # Handle no‑op action
         if action == no_op_action:
             current_costs = self.last_costs if hasattr(self, 'last_costs') else self.initial_costs
             current_total = sum(current_costs)
@@ -189,7 +191,8 @@ class LocalIndexingEnv(gym.Env):
                 'costs': current_costs,
                 'total_cost': current_total,
                 'storage': self._spaces_used,
-                'agent_mode': self.agent_type
+                'agent_mode': self.agent_type,
+                'costs_knapsack': 0
             }
 
         # Save old state to know if we are adding or dropping
@@ -205,20 +208,21 @@ class LocalIndexingEnv(gym.Env):
             # Adding an index
             candidate = self.candidates[action]
             required_space = self._get_candidate_size(candidate)
-            if self._spaces_used + required_space > self.storage_budget:
+            # Budget check only in 'enforce' mode
+            if self.budget_mode == 'enforce' and self._spaces_used + required_space > self.storage_budget:
                 reward = -10.0
                 return self._get_obs(), reward, False, False, {
                     'costs': self.initial_costs,
                     'total_cost': initial_total,
                     'storage': self._spaces_used,
-                    'agent_mode': self.agent_type
+                    'agent_mode': self.agent_type,
+                    'costs_knapsack': 0
                 }
             else:
                 self._current_indexes[action] = 1
                 self._spaces_used += required_space
         else:
             # Dropping an index
-
             candidate = self.candidates[action]
             size = self._get_candidate_size(candidate)
             self._current_indexes[action] = 0
@@ -228,6 +232,23 @@ class LocalIndexingEnv(gym.Env):
         current_costs = self._estimate_workload_costs(queries)
         current_total = sum(current_costs)
         self.last_costs = current_costs[:]
+
+        # Compute the gain (cost reduction) and update index_gains
+        gain = initial_total - current_total
+        if gain > 0 and self._current_indexes[action] == 1:
+            self.index_gains[action] = gain
+        else:
+            self.index_gains.pop(action, None)
+
+        # Compute knapsack costs only in 'ignore' mode, and only if we have any gains
+        if self.budget_mode == 'ignore' and self.index_gains:
+            knapsack_indexes = self.get_knapsack_selection()
+            if knapsack_indexes:
+                costs_knapsack = self._estimate_cost_with_indexes(queries, knapsack_indexes)
+            else:
+                costs_knapsack = [0.0] * self.n_templates
+        else:
+            costs_knapsack = [0.0] * self.n_templates
 
         used_storage = self._spaces_used
 
@@ -273,7 +294,6 @@ class LocalIndexingEnv(gym.Env):
             self.best_indexes = self._current_indexes.copy()
 
         # Stagnation reset logic
-        # Only consider improvements greater than 2% of best cost
         improvement_threshold = 0.02
         if self.best_cost_so_far is not None and self.best_cost_so_far > 0:
             improvement_ratio = (self.best_cost_so_far - current_total) / self.best_cost_so_far
@@ -289,29 +309,33 @@ class LocalIndexingEnv(gym.Env):
         # Reset if we have stagnated for max_stagnation_steps
         if (self.best_cost_so_far is not None and self.best_cost_so_far > 0 and
             self.stagnation_counter >= self.max_stagnation_steps):
-            # If we have a saved best configuration and current cost is much worse, restore it
+            
+            # Try to restore a saved best configuration if it is significantly better
             if (self.best_indexes is not None and
                 current_total > 2.0 * self.best_cost and
                 self.best_cost < current_total):
                 print(f"[Worker {self.replica_id}] Restoring best configuration with cost {self.best_cost:.2f} (current: {current_total:.2f})")
                 self._current_indexes = self.best_indexes.copy()
                 self._spaces_used = self._compute_storage_from_indexes()
-                # We don't reset best_cost_so_far because we want to keep the best seen
                 self.stagnation_counter = 0
             else:
-                print(f"[Worker {self.replica_id}] Stagnation detected (no significant improvement for {self.max_stagnation_steps} steps), clearing all indexes.")
-                self._current_indexes[:] = 0
-                self._spaces_used = 0.0
-                self.stagnation_counter = 0
-                self.best_cost_so_far = current_total
-
+                # Only clear all indexes if we are in 'enforce' mode AND storage used ≤ 80% of budget
+                if self.budget_mode == 'enforce' and self._spaces_used <= 0.8 * self.storage_budget:
+                    print(f"[Worker {self.replica_id}] Stagnation detected (no significant improvement for {self.max_stagnation_steps} steps), clearing all indexes.")
+                    self._current_indexes[:] = 0
+                    self._spaces_used = 0.0
+                    self.stagnation_counter = 0
+                    self.best_cost_so_far = current_total
+                else:
+                    # Do not clear; just reset the counter to avoid immediate re-trigger
+                    self.stagnation_counter = 0
 
         terminated = False
         truncated = False
 
         return self._get_obs(), reward, terminated, truncated, {
             'costs': current_costs,
-            'costs_knapsack': 0,
+            'costs_knapsack': costs_knapsack,
             'total_cost': current_total,
             'storage': used_storage,
             'agent_mode': self.agent_type
