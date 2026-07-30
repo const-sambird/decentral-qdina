@@ -94,7 +94,8 @@ class RouterAgent:
         current_q_values = self.policy_net(state_b).gather(1, action_b)
 
         # Calculate maximum future Q value: max_a Q_target(s_{t+1}, a)
-        max_next_q_values = self.target_net(next_state_b).max(1)[0].unsqueeze(1)
+        next_actions = self.policy_net(next_state_b).argmax(1, keepdim=True)
+        max_next_q_values = self.target_net(next_state_b).gather(1, next_actions)
         
         # Bellman equation for expected target value (Isolate from gradient graph using .detach())
         expected_q_values = reward_b + (self.gamma * max_next_q_values.detach())
