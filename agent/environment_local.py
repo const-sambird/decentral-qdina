@@ -65,6 +65,8 @@ class LocalIndexingEnv(gym.Env):
         self.best_indexes = None
         self.best_cost = float('inf')
 
+        self.index_gains = {} 
+        
     def _get_candidate_size(self, candidate) -> int:
         """
         Compute the real size (in bytes) of a candidate index using HypoPG.
@@ -165,6 +167,7 @@ class LocalIndexingEnv(gym.Env):
         if queries is None:
             queries = []
 
+        # Update workload state (template frequencies)
         self._current_workload_state = np.zeros(self.n_templates, dtype=np.int32)
         for q_idx in range(len(queries)):
             if q_idx < len(self.templates):
@@ -215,6 +218,7 @@ class LocalIndexingEnv(gym.Env):
                 self._spaces_used += required_space
         else:
             # Dropping an index
+
             candidate = self.candidates[action]
             size = self._get_candidate_size(candidate)
             self._current_indexes[action] = 0
@@ -301,10 +305,13 @@ class LocalIndexingEnv(gym.Env):
                 self.stagnation_counter = 0
                 self.best_cost_so_far = current_total
 
+
         terminated = False
         truncated = False
+
         return self._get_obs(), reward, terminated, truncated, {
             'costs': current_costs,
+            'costs_knapsack': 0,
             'total_cost': current_total,
             'storage': used_storage,
             'agent_mode': self.agent_type
@@ -337,3 +344,50 @@ class LocalIndexingEnv(gym.Env):
                 index_name = f"{table}_{'_'.join(columns)}"
                 active_indexes.append(index_name)
         return active_indexes
+
+    def get_knapsack_selection(self):
+        from common.knapsack import select_indexes_knapsack
+
+        items = []
+        for action, gain in self.index_gains.items():
+            if gain > 0:
+                size = self._get_candidate_size(self.candidates[action])
+                items.append((gain, size, action))
+        
+        if not items:
+            return []
+        
+        selected_items = select_indexes_knapsack(
+            [(gain, size) for gain, size, _ in items],
+            self.storage_budget
+        )
+
+        selected_actions = []
+        for gain, size in selected_items:
+
+            for g, s, act in items:
+                if g == gain and s == size:
+                    selected_actions.append(act)
+                    break
+        
+
+        selected_indexes = []
+        for act in selected_actions:
+            table, columns = self.candidates[act]
+            selected_indexes.append((table, columns))
+        return selected_indexes
+
+
+    def _estimate_cost_with_indexes(self, queries, indexes):
+        """Estimate costs with a given list of indexes (no modification of internal state)."""
+        if not queries:
+            return [0.0] * self.n_templates
+
+        local_queue = Queue()
+        conn_string = f"host={self.hostname} port={self.port} dbname={self.db_name} user={self.user} password={self.password}"
+        estimator = CostEstimator(self.n_templates, conn_string, local_queue)
+        p = Process(target=estimator.run, args=(queries, self.templates, indexes))
+        p.start()
+        costs = local_queue.get(timeout=120)
+        p.join()
+        return costs
