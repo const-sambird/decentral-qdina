@@ -1,10 +1,10 @@
--- using 6082775945 as a seed to the RNG
+-- using 3951237324 as a seed to the RNG
 
 
 select
 	o_year,
 	sum(case
-		when nation = 'UNITED KINGDOM' then volume
+		when nation = 'SAUDI ARABIA' then volume
 		else 0
 	end) / sum(volume) as mkt_share
 from
@@ -29,14 +29,12 @@ from
 			and o_custkey = c_custkey
 			and c_nationkey = n1.n_nationkey
 			and n1.n_regionkey = r_regionkey
-			and r_name = 'EUROPE'
+			and r_name = 'MIDDLE EAST'
 			and s_nationkey = n2.n_nationkey
 			and o_orderdate between date '1995-01-01' and date '1996-12-31'
-			and p_type = 'MEDIUM BURNISHED STEEL'
+			and p_type = 'PROMO PLATED BRASS'
 	) as all_nations
 group by
 	o_year
 order by
 	o_year;
-
-

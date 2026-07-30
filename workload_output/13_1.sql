@@ -1,4 +1,4 @@
--- using 6082775901 as a seed to the RNG
+-- using 3951237280 as a seed to the RNG
 
 
 select
@@ -21,5 +21,3 @@ group by
 order by
 	custdist desc,
 	c_count desc;
-
-

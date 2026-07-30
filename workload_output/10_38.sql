@@ -1,4 +1,4 @@
--- using 6082775938 as a seed to the RNG
+-- using 3951237317 as a seed to the RNG
 
 
 select
@@ -18,8 +18,8 @@ from
 where
 	c_custkey = o_custkey
 	and l_orderkey = o_orderkey
-	and o_orderdate >= date '1993-05-01'
-	and o_orderdate < date '1993-05-01' + interval '3' month
+	and o_orderdate >= date '1994-07-01'
+	and o_orderdate < date '1994-07-01' + interval '3' month
 	and l_returnflag = 'R'
 	and c_nationkey = n_nationkey
 group by
@@ -31,6 +31,5 @@ group by
 	c_address,
 	c_comment
 order by
-	revenue desc;
-
-
+	revenue desc
+LIMIT 20;

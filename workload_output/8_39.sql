@@ -1,10 +1,10 @@
--- using 6082775939 as a seed to the RNG
+-- using 3951237318 as a seed to the RNG
 
 
 select
 	o_year,
 	sum(case
-		when nation = 'VIETNAM' then volume
+		when nation = 'CHINA' then volume
 		else 0
 	end) / sum(volume) as mkt_share
 from
@@ -32,11 +32,9 @@ from
 			and r_name = 'ASIA'
 			and s_nationkey = n2.n_nationkey
 			and o_orderdate between date '1995-01-01' and date '1996-12-31'
-			and p_type = 'ECONOMY POLISHED BRASS'
+			and p_type = 'SMALL BRUSHED NICKEL'
 	) as all_nations
 group by
 	o_year
 order by
 	o_year;
-
-

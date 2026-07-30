@@ -1,4 +1,4 @@
--- using 6082775937 as a seed to the RNG
+-- using 3951237316 as a seed to the RNG
 
 
 select
@@ -20,7 +20,7 @@ from
 	lineitem
 where
 	o_orderkey = l_orderkey
-	and l_shipmode in ('FOB', 'REG AIR')
+	and l_shipmode in ('SHIP', 'AIR')
 	and l_commitdate < l_receiptdate
 	and l_shipdate < l_commitdate
 	and l_receiptdate >= date '1994-01-01'
@@ -29,5 +29,3 @@ group by
 	l_shipmode
 order by
 	l_shipmode;
-
-

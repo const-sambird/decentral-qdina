@@ -1,4 +1,4 @@
--- using 6082775901 as a seed to the RNG
+-- using 3951237280 as a seed to the RNG
 
 
 select
@@ -14,7 +14,7 @@ from
 			customer
 		where
 			substring(c_phone from 1 for 2) in
-				('20', '23', '30', '31', '19', '16', '29')
+				('17', '26', '32', '12', '31', '33', '20')
 			and c_acctbal > (
 				select
 					avg(c_acctbal)
@@ -23,7 +23,7 @@ from
 				where
 					c_acctbal > 0.00
 					and substring(c_phone from 1 for 2) in
-						('20', '23', '30', '31', '19', '16', '29')
+						('17', '26', '32', '12', '31', '33', '20')
 			)
 			and not exists (
 				select
@@ -38,5 +38,3 @@ group by
 	cntrycode
 order by
 	cntrycode;
-
-

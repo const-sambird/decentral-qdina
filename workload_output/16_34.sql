@@ -1,4 +1,4 @@
--- using 6082775934 as a seed to the RNG
+-- using 3951237313 as a seed to the RNG
 
 
 select
@@ -11,9 +11,9 @@ from
 	part
 where
 	p_partkey = ps_partkey
-	and p_brand <> 'Brand#35'
-	and p_type not like 'STANDARD POLISHED%'
-	and p_size in (38, 12, 44, 3, 16, 1, 17, 19)
+	and p_brand <> 'Brand#53'
+	and p_type not like 'LARGE BRUSHED%'
+	and p_size in (49, 47, 33, 38, 20, 42, 19, 44)
 	and ps_suppkey not in (
 		select
 			s_suppkey
@@ -31,5 +31,3 @@ order by
 	p_brand,
 	p_type,
 	p_size;
-
-

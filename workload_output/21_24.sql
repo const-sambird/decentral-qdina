@@ -1,4 +1,4 @@
--- using 6082775924 as a seed to the RNG
+-- using 3951237303 as a seed to the RNG
 
 
 select
@@ -34,11 +34,10 @@ where
 			and l3.l_receiptdate > l3.l_commitdate
 	)
 	and s_nationkey = n_nationkey
-	and n_name = 'ALGERIA'
+	and n_name = 'ROMANIA'
 group by
 	s_name
 order by
 	numwait desc,
-	s_name;
-
-
+	s_name
+LIMIT 100;

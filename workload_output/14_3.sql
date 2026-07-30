@@ -1,4 +1,4 @@
--- using 6082775903 as a seed to the RNG
+-- using 3951237282 as a seed to the RNG
 
 
 select
@@ -12,7 +12,5 @@ from
 	part
 where
 	l_partkey = p_partkey
-	and l_shipdate >= date '1994-12-01'
-	and l_shipdate < date '1994-12-01' + interval '1' month;
-
-
+	and l_shipdate >= date '1995-09-01'
+	and l_shipdate < date '1995-09-01' + interval '1' month;
