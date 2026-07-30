@@ -1,21 +1,36 @@
 import psycopg
-import re
-import json
 from multiprocessing import Queue
+import json
 
 class CostEstimator:
     def __init__(self, n_templates: int, connection_string: str, queue: Queue):
+        '''
+        Invokes the PostgreSQL cost estimation module on a set of queries on a given
+        replica. Puts the estimated costs back in a queue, as this is intended to be
+        run in a multiprocessing context.
+
+        :param n_templates: the number of unique templates for which to estimate costs
+        :param connection_string: the database replica string to open a connection to
+        :param queue: the queue to return estimated costs into
+        '''
         self.n_templates = n_templates
         self.connection_string = connection_string
         self.queue = queue
 
-    def run(self, queries: list[str], templates: list, indexes: list):
-        costs = [0.0 for _ in range(self.n_templates)]
-        
+    def run(self, queries: list[str], templates: list[int], indexes: list):
+        '''
+        Estimate costs for the queries, and put those costs into the
+        Queue passed to the constructor.
+
+        :param queries: the queries in the workload to estimate
+        :param templates: which template each query belongs to
+        :param indexes: a description of the indexes to simulate for cost estimation
+        '''
+        costs = [0 for _ in range(self.n_templates)]
         try:
             conn = psycopg.connect(self.connection_string)
-        except Exception as conn_err:
-            print(f"[CostEstimator Error] Cannot connect to the database: {conn_err}")
+        except Exception as e:
+            print(f"CostEstimator: connection error: {e}")
             self.queue.put(costs)
             return
 
@@ -31,72 +46,37 @@ class CostEstimator:
                     try:
                         cur.execute('SELECT indexrelid FROM hypopg_create_index($$%s$$);' % creation_string)
                     except Exception as e:
-                        print(f"[CostEstimator] Virtual index creation error: {e}")
+                        print(f"CostEstimator: virtual index creation error: {e}")
                         conn.rollback()
 
             for idx, query in enumerate(queries):
-                if not query:
-                    continue
-                
-                query_str = str(query)
-                
-                query_clean = re.sub(r'--.*$', '', query_str, flags=re.MULTILINE)
-                
-                query_clean = re.sub(r'\s*\(\d+\)\s*', ' ', query_clean)
-                
-                query_clean = re.sub(r'(?i)\bset\s+rowcount\s+[-\d]+\b', '', query_clean)
-                query_clean = re.sub(r'(?i)\bgo\b', '', query_clean)
-                
-                query_clean = query_clean.strip()
-                
-                if query_clean.endswith(';'):
-                    query_clean = query_clean[:-1].strip()
-                    
-                if not query_clean:
-                    continue
-
-                statement_lower = query_clean.lower()
-                
-                if 'create view' in statement_lower or 'drop view' in statement_lower:
-                    try:
-                        cur.execute(query_clean)
-                    except psycopg.errors.Error:
-                        conn.rollback()
-                        continue
-                elif any(cmd in statement_lower for cmd in ['select', 'update', 'insert', 'delete']):
-                    try:
-                        cur.execute('EXPLAIN (FORMAT JSON) %s;' % query_clean)
-                        row = cur.fetchone()
-                        
-                        if row and row[0]:
-                            raw_json = row[0]
-                            
-                            parsed_data = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
-                            
-                            if isinstance(parsed_data, list) and len(parsed_data) > 0:
-                                plan_dict = parsed_data[0].get('Plan', {})
-                                if 'Total Cost' in plan_dict:
-                                    total_cost_val = float(plan_dict['Total Cost'])
-                                    
-                                    try:
-                                        t_idx = int(templates[idx])
-                                        if 0 <= t_idx < len(costs):
-                                            costs[t_idx] += total_cost_val
-                                        else:
-                                            costs[0] += total_cost_val
-                                    except Exception:
-                                        costs[0] += total_cost_val
-                                        
-                    except psycopg.errors.Error:
-                        conn.rollback()
-                        continue
-                    except Exception:
-                        continue
+                for statement in query.split(';'):
+                    statement = statement.lower()
+                    if 'create view' in statement or 'drop view' in statement:
+                        try:
+                            cur.execute(statement)
+                        except Exception as e:
+                            print(f"CostEstimator: DDL error: {e}")
+                            conn.rollback()
+                    elif 'select' in statement or 'update' in statement or 'insert' in statement or 'delete' in statement:
+                        try:
+                            cur.execute('EXPLAIN (FORMAT JSON) %s' % statement)
+                            row = cur.fetchone()
+                            if row and row[0]:
+                                try:
+                                    # parse JSON
+                                    data = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                                    if isinstance(data, list) and len(data) > 0:
+                                        plan = data[0].get('Plan', {})
+                                        total_cost = plan.get('Total Cost')
+                                        if total_cost is not None:
+                                            costs[templates[idx]] += float(total_cost)
+                                except Exception as e:
+                                    print(f"CostEstimator: JSON parsing error: {e}")
+                        except Exception as e:
+                            print(f"CostEstimator: EXPLAIN error: {e}")
+                            conn.rollback()
 
             conn.commit()
-            conn.close()
         
-        if sum(costs) == 0.0:
-            print(f"[CostEstimator Debug Warning] The total cost for this batch is 0.0 ! Number of queries evaluated: {len(queries)}")
-            
         self.queue.put(costs)
