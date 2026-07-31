@@ -207,8 +207,9 @@ class LocalIndexingEnv(gym.Env):
 
         # Handle no‑op action
         if action == no_op_action:
-            current_costs = self.last_costs if hasattr(self, 'last_costs') else self.initial_costs
+            current_costs = self._estimate_workload_costs(queries)
             current_total = sum(current_costs)
+            self.last_costs = current_costs[:]
             # Reward for stability: bonus if current configuration is good
             if self.best_cost_so_far is not None and current_total <= 1.5 * self.best_cost_so_far:
                 reward = 0.5
