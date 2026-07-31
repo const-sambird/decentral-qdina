@@ -138,6 +138,7 @@ if __name__ == '__main__':
             print(f"[Master Orchestrator] Global Episode {episode + 1} Done. Broadcasting stop_training signal.")
             with servicer.lock:
                 servicer.stop_training_signal = True
+                servicer.lock.notify_all()
 
             # Wait for all workers to acknowledge the episode reset before proceeding
             # Increased wait time and added a timeout to avoid infinite blocking
