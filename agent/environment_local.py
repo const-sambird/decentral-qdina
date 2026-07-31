@@ -118,7 +118,7 @@ class LocalIndexingEnv(gym.Env):
 
         try:
             p.start()
-            costs = local_queue.get(timeout=120)
+            costs = local_queue.get(timeout=600)
             p.join()
             return costs
         except Exception as e:
@@ -412,6 +412,6 @@ class LocalIndexingEnv(gym.Env):
         estimator = CostEstimator(self.n_templates, conn_string, local_queue)
         p = Process(target=estimator.run, args=(queries, self.templates, indexes))
         p.start()
-        costs = local_queue.get(timeout=120)
+        costs = local_queue.get(timeout=600)
         p.join()
         return costs

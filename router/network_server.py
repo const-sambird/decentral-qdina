@@ -132,7 +132,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     # Remove dead workers that haven't sent any request for more than 10 seconds.
                     now = time.time()
                     dead_workers = [wid for wid, info in self.registered_workers.items()
-                                    if now - info['last_seen'] > 30.0]
+                                    if now - info['last_seen'] > 3600.0]
                     for wid in dead_workers:
                         del self.registered_workers[wid]
                         self.episode_reset_acks.discard(wid)
