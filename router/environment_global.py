@@ -44,6 +44,14 @@ class GlobalRoutingEnv(gym.Env):
         return template_idx, target_replica
 
     def _get_obs(self):
+        """Construct the observation vector for the global routing environment.
+
+        The observation consists of the current routing table (template-to-replica mapping),
+        the normalized costs per template, and the current worker loads.
+
+        Returns:
+            np.ndarray: Concatenated 1D observation array.
+        """
         return np.concatenate([
             self._state_routes,
             self._state_costs,
@@ -51,6 +59,18 @@ class GlobalRoutingEnv(gym.Env):
         ])
 
     def reset(self, seed=None, options=None):
+        """Reset the global routing environment to its initial state.
+
+        If 'initial_routing' is provided in options, it is used to set the routing table.
+        Otherwise, routes are evenly distributed across replicas.
+
+        Args:
+            seed (int, optional): Random seed.
+            options (dict, optional): May contain 'initial_routing' list.
+
+        Returns:
+            tuple: (observation, info)
+        """
         super().reset(seed=seed)
         if options and 'initial_routing' in options:
             self._state_routes = np.array(options['initial_routing'], dtype=np.int32)

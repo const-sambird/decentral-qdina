@@ -70,6 +70,15 @@ class RouterAgent:
             return q_values.argmax().item()
 
     def learn(self, memory, batch_size):
+        """Perform one training step using a batch of experiences from the replay memory.
+
+        Samples a batch, computes TD targets using the target network, and updates
+        the policy network via gradient descent.
+
+        Args:
+            memory (ReplayMemory): The replay memory buffer.
+            batch_size (int): Number of transitions to sample.
+        """
         if len(memory) < batch_size:
             return
 
@@ -112,5 +121,10 @@ class RouterAgent:
         self.optimizer.step()
 
     def soft_update(self, tau=0.005):
+        """Perform a soft update of the target network towards the policy network.
+
+        Args:
+            tau (float): Interpolation factor (0 < tau < 1).
+        """
         for target_param, policy_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
             target_param.data.copy_(tau * policy_param.data + (1 - tau) * target_param.data)

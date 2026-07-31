@@ -92,6 +92,15 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         print(f"[Router] Routing table initialized with loads: {loads}")
 
     def RegisterWorker(self, request, context):
+        """Register a worker node with the master router.
+
+        Args:
+            request: gRPC request containing replica_id, hostname, port.
+            context: gRPC context.
+
+        Returns:
+            RegistrationResponse: status and message.
+        """
         with self.lock:
             worker_id = request.replica_id
             self.registered_workers[worker_id] = {
@@ -222,7 +231,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     # Remove workers that have not sent any request for more than 10 seconds.
                     now = time.time()
                     dead_workers = [wid for wid, info in self.registered_workers.items()
-                                    if now - info['last_seen'] > 30.0]
+                                    if now - info['last_seen'] > 300.0]
                     for wid in dead_workers:
                         del self.registered_workers[wid]
                         self.collected_metrics.pop(wid, None)
@@ -363,6 +372,17 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
 
     def _get_routed_slice_for_node(self, node_id):
+        """Compute the list of queries to be routed to a specific worker node.
+
+        Depending on the execution mode ('uniform' or 'drift'), queries are either
+        assigned round-robin or based on the routing table.
+
+        Args:
+            node_id (int): The replica ID of the worker.
+
+        Returns:
+            list[str]: List of SQL query strings assigned to this worker.
+        """
         sorted_workers = sorted(self.registered_workers.keys())
         try:
             internal_id = sorted_workers.index(node_id)
