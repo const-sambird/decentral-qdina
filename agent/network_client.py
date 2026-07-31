@@ -67,6 +67,15 @@ class QDinaNetworkClient:
         self.target_update_freq = 10
 
     def register_to_master(self, local_hostname: str = '127.0.0.1', local_port: int = 5432):
+        """Register this worker node with the master router via gRPC.
+
+        Args:
+            local_hostname (str): The hostname or IP address of this worker.
+            local_port (int): The port this worker listens on (if any).
+
+        Returns:
+            bool: True if registration succeeded, False otherwise.
+        """
         try:
             request = qdina_pb2.WorkerRegistration(
                 replica_id=self.replica_id,
@@ -82,6 +91,10 @@ class QDinaNetworkClient:
 
 
     def _init_agent_networks(self):
+        """Initialize the policy and target networks and the optimizer.
+
+        Chooses between classical DQN and quantum DQN based on `self.agent_mode`.
+        """
         n_actions = self.env.action_space.n
         n_observations = 2 * self.n_templates + self.n_candidates
         if self.agent_mode == 'classical':
@@ -102,6 +115,14 @@ class QDinaNetworkClient:
             print(f"[Worker Client {self.replica_id}] Quantum DQN Parameterized Circuit compiled successfully.")
 
     def _select_action(self, state):
+        """Select an action using an epsilon-greedy policy.
+
+        Args:
+            state: The current environment observation.
+
+        Returns:
+            int: The chosen action index.
+        """
         if random.random() < self.epsilon:
             return random.randint(0, self.env.action_space.n - 1)
         state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
@@ -110,6 +131,10 @@ class QDinaNetworkClient:
             return q_values.argmax().item()
 
     def _optimize_local_model(self):
+        """Perform one optimization step on the local DQN using the replay memory.
+
+        Samples a batch of transitions and updates the network weights.
+        """
         if len(self.local_memory) < self.batch_size:
             return
             
@@ -183,6 +208,13 @@ class QDinaNetworkClient:
             self.optimizer.step(closure)
 
     def run_training(self):
+        """Main training loop for the local reinforcement learning agent.
+
+        Registers with the master router, initializes the environment and networks,
+        then repeatedly submits metrics, receives sliced workloads, executes actions,
+        stores transitions, and updates the local model. Handles episode resets and
+        connection errors.
+        """
         print(f"[Worker Client {self.replica_id}] Initiating registration protocol with Master Router...")
         registered = self.register_to_master(local_hostname=self.db_host, local_port=self.db_port)
         if not registered:
@@ -331,6 +363,19 @@ class QDinaNetworkClient:
                 time.sleep(5.0)
 
     def _generate_candidates(self, queries: list[str], templates: list[int]) -> list[tuple[str, tuple[str, ...]]]:
+        """Generate index candidates from the given workload using the Preprocessor.
+
+        This method connects to the database, runs the preprocessor to extract
+        candidate columns, and returns them as (table, columns) tuples.
+
+        Args:
+            queries (list[str]): The full workload queries.
+            templates (list[int]): Template IDs for each query.
+
+        Returns:
+            list[tuple[str, tuple[str, ...]]]: A list of candidates, each as a tuple
+                (table_name, (col1, col2, ...)).
+        """
         replica = Replica(
             id=self.replica_id,
             hostname=self.db_host,

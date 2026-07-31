@@ -51,15 +51,34 @@ class QIAEnvironment(gym.Env):
         self._action_mask[0:self.action_drop_threshold] = 0
 
     def _get_obs(self):
+        """Return the current internal state of the environment.
+
+        Returns:
+            np.ndarray: The binary state vector of length `n_candidates`.
+        """
         return self._state
 
     def _get_info(self):
+        """Return auxiliary information about the environment.
+
+        Returns:
+            dict: Contains the problem instance and the action mask.
+        """
         return {
             'problem': self.problem,
             'mask': self._action_mask
         }
     
     def reset(self, seed=None, options=None):
+        """Reset the environment to the initial state.
+
+        Args:
+            seed (int, optional): Random seed.
+            options (dict, optional): Additional reset options.
+
+        Returns:
+            tuple: (observation, info)
+        """
         super().reset(seed=seed)
 
         self._state = np.zeros(self.n_candidates)
@@ -72,9 +91,17 @@ class QIAEnvironment(gym.Env):
         return observation, info
     
     def step(self, action: int):
-        '''
-        
-        '''
+        """Take one action in the environment.
+
+        The action is decoded to either add or drop an index candidate.
+        If the storage budget would be exceeded, the episode terminates.
+
+        Args:
+            action (int): Discrete action index.
+
+        Returns:
+            tuple: (observation, reward, terminated, truncated, info)
+        """
         action_to_mask = action
         creating = action >= self.action_drop_threshold
         if creating:
@@ -99,9 +126,11 @@ class QIAEnvironment(gym.Env):
         return observation, reward, terminated, truncated, info
     
     def _step_threshold_exceeded(self):
-        '''
-        Space budget exceeded. Do not reward; terminate episode.
-        '''
+        """Handle the case where adding an index would exceed the budget.
+
+        Returns:
+            tuple: (observation, reward, terminated, truncated, info) with terminated=True.
+        """
         observation = self._get_obs()
         info = self._get_info()
         reward = self.get_benefit()
@@ -111,10 +140,21 @@ class QIAEnvironment(gym.Env):
         return observation, reward, terminated, truncated, info
     
     def get_benefit(self):
+        """Calculate the total benefit of the current set of selected indexes.
+
+        Returns:
+            int: Sum of benefits of selected candidates.
+        """
         return sum(self.problem.benefits[self._state == 1])
 
     def get_used_storage(self):
+        """Calculate the total storage used by the current set of selected indexes.
+
+        Returns:
+            int: Sum of weights of selected candidates.
+        """
         return sum(self.problem.weights[self._state == 1])
     
     def _mask_action(self, action):
+        """Update the action mask (not implemented in this version)."""
         pass
