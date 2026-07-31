@@ -143,7 +143,7 @@ if __name__ == '__main__':
             # Increased wait time and added a timeout to avoid infinite blocking
             print("[Master Orchestrator] Waiting for all workers to acknowledge episode reset...")
             wait_counter = 0
-            max_wait_seconds = 120  # Maximum 2 minutes of waiting
+            max_wait_seconds = 600  # Maximum 10 minutes of waiting
             while True:
                 with servicer.lock:
                     if not servicer.stop_training_signal:
