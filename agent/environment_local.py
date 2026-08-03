@@ -448,14 +448,15 @@ class LocalIndexingEnv(gym.Env):
         )
 
         selected_actions = []
+        consumed_acts = set() 
+        
         for gain, size in selected_items:
-
             for g, s, act in items:
-                if g == gain and s == size:
+                if g == gain and s == size and act not in consumed_acts:
                     selected_actions.append(act)
+                    consumed_acts.add(act)
                     break
         
-
         selected_indexes = []
         for act in selected_actions:
             table, columns = self.candidates[act]
