@@ -354,7 +354,7 @@ class QDinaNetworkClient:
                         costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
                 
                 storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
-                print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.3f}")
+                print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Reward {reward:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.3f}")
 
 
             except grpc.RpcError as e:
