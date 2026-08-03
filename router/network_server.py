@@ -125,7 +125,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             # If the router hasn't finished waiting for all workers to register,
             # send an empty slice and tell the worker not to stop yet.
             if not self.ready_to_train:
-                return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
+                return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon)
 
             worker_id = request.replica_id
 
@@ -152,7 +152,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         if len(self.registered_workers) == 0:
                             self.stop_training_signal = False
                             self.episode_reset_acks.clear()
-                            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
+                            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon)
                 
                     # Only accept messages with local_reset=True; others are ignored.
                     if request.local_reset:
@@ -173,7 +173,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                             f"({len(self.episode_reset_acks)}/{len(self.registered_workers)})")
                     else:
                         # Normal metrics during stop signal are ignored – we force a reset.
-                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
+                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon)
                 
                     # Check if all workers have acknowledged the reset.
                     if len(self.episode_reset_acks) >= len(self.registered_workers):
@@ -189,11 +189,12 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         print(f"[DEBUG] Next slices sizes: { {w: len(self.next_workload_slices.get(w, [])) for w in self.registered_workers} }")
                         return qdina_pb2.WorkloadSlice(
                             stop_training=False,
-                            queries=self.next_workload_slices.get(worker_id, [])
+                            queries=self.next_workload_slices.get(worker_id, []),
+                            epsilon=self.epsilon
                         )
                     else:
                         # Not all workers have reset yet; keep waiting.
-                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
+                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon)
 
                 # Store the metrics that this worker sent for the current step.
                 if request.local_reset:
@@ -348,7 +349,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 self.lock.notify_all()
                                 # We don't set stop_training_signal anymore.
                                 self.stop_training_signal = True
-                                return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
+                                return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon)
                         else:
                             # Another worker is already the leader; wait for it.
                             self.lock.wait()
@@ -358,18 +359,19 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
                 # After the loop, if the stop signal is active, tell the worker to stop.
                 if self.stop_training_signal:
-                    return qdina_pb2.WorkloadSlice(stop_training=True, queries=[])
+                    return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon)
 
                 # Otherwise, return the queries assigned to this specific worker.
                 return qdina_pb2.WorkloadSlice(
                     stop_training=False,
-                    queries=self.next_workload_slices.get(worker_id, [])
+                    queries=self.next_workload_slices.get(worker_id, []),
+                    epsilon=self.epsilon
                 )
 
         except Exception as e:
             # Catch any unexpected error and force a stop to avoid hanging workers.
             print(f"[CRITICAL] Unhandled error in SubmitMetricsAndGetWorkload: {e}")
-            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[])
+            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon)
 
     def _get_routed_slice_for_node(self, node_id):
         """Compute the list of queries to be routed to a specific worker node.

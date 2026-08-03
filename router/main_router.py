@@ -5,6 +5,7 @@ import argparse
 import grpc
 from concurrent import futures
 from protos import qdina_pb2_grpc
+import math
 
 from router.network_server import QDinaServerServicer
 from common.workload_manager import WorkloadManager
@@ -101,16 +102,17 @@ if __name__ == '__main__':
         print(f"[Master Orchestrator] Total queries in initial workload: {len(initial_queries)}")
         
         steps_per_episode = 100
-        epsilon_start = 1.0
-        epsilon_min = 0.05
-        decay_rate = 0.98
+        EPS_START = 0.9
+        EPS_END = 0.05
+        EPS_DECAY = 250
         
         for episode in range(args.episodes):
             print(f"\n--- [Master Orchestrator] Starting Global Episode {episode + 1}/{args.episodes} ---")
             
             # Dynamic epsilon decay for exploration-exploitation balance
-            servicer.epsilon = max(epsilon_min, epsilon_start * (decay_rate ** episode))
-            
+            epsilon = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * episode / EPS_DECAY)
+            servicer.epsilon = max(EPS_END, min(EPS_START, epsilon))
+
             with servicer.lock:
                 servicer.stop_training_signal = False
                 servicer.steps_since_last_change = 0

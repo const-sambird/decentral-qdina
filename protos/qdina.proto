@@ -34,4 +34,5 @@ message LocalMetrics {
 message WorkloadSlice {
     bool stop_training = 1;        // Signal to stop the current episode
     repeated string queries = 2;   // The specific slice of SQL queries to evaluate
+    float epsilon = 3;             // Exploration rate for epsilon-greedy policy (decayed globally)
 }

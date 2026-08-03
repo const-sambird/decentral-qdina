@@ -56,8 +56,6 @@ class QDinaNetworkClient:
         self.batch_size = 32
         self.gamma = 0.99
         self.epsilon = 1.0
-        self.epsilon_min = 0.05
-        self.epsilon_decay = 0.9999
         self.episode_step_count = 0
 
         
@@ -299,6 +297,9 @@ class QDinaNetworkClient:
                     costs_per_template = [0.0] * self.n_templates
                     time.sleep(0.2)
                     continue
+
+                if response.epsilon is not None:
+                    self.epsilon = response.epsilon
                 
                 print(f"[Worker Client {self.replica_id}] Sliced workload received containing {len(current_queries)} active queries.")
                 dynamic_templates_map = [hash(q_text) % self.n_templates for q_text in current_queries]
@@ -353,10 +354,8 @@ class QDinaNetworkClient:
                         costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
                 
                 storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
-                print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.2f}")
+                print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.3f}")
 
-                if not response.stop_training:
-                    self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
             except grpc.RpcError as e:
                 print(f"[Worker Client {self.replica_id}] Connection lost with master router. Retrying in 5 seconds... ({e.code()})")
