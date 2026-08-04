@@ -257,7 +257,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 all_template_costs = [
                                     self.collected_metrics[w_id]['costs'] for w_id in sorted_workers
                                 ]
-                                template_costs_array = np.sum(all_template_costs, axis=0)
+                                template_costs_matrix = np.array(all_template_costs).T
 
                                 # Get current state from the global environment.
                                 state = self.env._get_obs()
@@ -299,7 +299,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 next_state, reward, _, _, info = self.env.step(
                                     action,
                                     external_costs=costs_array,
-                                    external_template_costs=template_costs_array,
+                                    external_template_costs=template_costs_matrix,
                                     worker_loads=worker_loads_current
                                 )
 

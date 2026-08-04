@@ -15,10 +15,9 @@ class GlobalRoutingEnv(gym.Env):
         self.n_templates = n_templates
         self.n_replicas = n_replicas
         
-        # Observation: routes (n_templates) + costs (n_templates) + worker loads (n_replicas)
         self.observation_space = gym.spaces.Box(
             low=0, high=np.inf,
-            shape=(self.n_templates * 2 + self.n_replicas,)
+            shape=(n_templates + n_templates + n_replicas + (n_templates * n_replicas),)
         )
         self.n_actions = (self.n_templates * (self.n_replicas - 1)) + 1
         self.action_space = gym.spaces.Discrete(self.n_actions)
@@ -26,6 +25,9 @@ class GlobalRoutingEnv(gym.Env):
         self._state_routes = np.zeros(self.n_templates, dtype=np.int32)
         self._state_costs = np.zeros(self.n_templates, dtype=np.float64)
         self._state_worker_loads = np.zeros(self.n_replicas, dtype=np.int32)
+
+        self._state_cost_matrix = np.zeros((self.n_templates, self.n_replicas), dtype=np.float64)
+        self._previous_makespan = None  # For reward shaping
 
     def _decode_action(self, action: int):
         '''
@@ -46,16 +48,19 @@ class GlobalRoutingEnv(gym.Env):
     def _get_obs(self):
         """Construct the observation vector for the global routing environment.
 
-        The observation consists of the current routing table (template-to-replica mapping),
-        the normalized costs per template, and the current worker loads.
-
-        Returns:
-            np.ndarray: Concatenated 1D observation array.
+        The observation consists of:
+        - Current routing table (template-to-replica mapping)
+        - Aggregated costs per template (log10 normalized)
+        - Worker loads (number of queries per replica)
+        - Full cost matrix (per-template, per-replica costs)
         """
+        # Flatten the cost matrix (row-major order)
+        flat_matrix = self._state_cost_matrix.flatten()
         return np.concatenate([
-            self._state_routes,
-            self._state_costs,
-            self._state_worker_loads
+            self._state_routes.astype(np.float32),
+            self._state_costs.astype(np.float32),
+            self._state_worker_loads.astype(np.float32),
+            flat_matrix.astype(np.float32)
         ])
 
     def reset(self, seed=None, options=None):
@@ -79,6 +84,8 @@ class GlobalRoutingEnv(gym.Env):
         
         self._state_costs = np.zeros(self.n_templates, dtype=np.float64)
         self._state_worker_loads = np.zeros(self.n_replicas, dtype=np.int32)
+        self._state_cost_matrix.fill(0.0)
+        self._previous_makespan = None
         return self._get_obs(), {}
 
     def step(self, action: int, external_costs=None, external_template_costs=None, worker_loads=None):
@@ -87,7 +94,9 @@ class GlobalRoutingEnv(gym.Env):
 
         :param action: The chosen action.
         :param external_costs: List of total costs per replica (length n_replicas).
-        :param external_template_costs: List of costs per template (length n_templates).
+        :param external_template_costs: If provided, can be:
+            - A 2D array (n_templates, n_replicas) to fill the cost matrix.
+            - A 1D array (n_templates) to fill only the aggregated costs.
         :param worker_loads: List of number of queries per replica (length n_replicas), used for load balancing penalty.
         """
         old_routes = self._state_routes.copy()
@@ -97,8 +106,20 @@ class GlobalRoutingEnv(gym.Env):
             template_idx, target_replica = instruction
             self._state_routes[template_idx] = target_replica
 
+        # Update the cost matrix if a 2D array is given
         if external_template_costs is not None:
-            self._state_costs = np.log10(np.array(external_template_costs, dtype=np.float64) + 1.0)
+            arr = np.array(external_template_costs)
+            if arr.ndim == 2 and arr.shape == (self.n_templates, self.n_replicas):
+                self._state_cost_matrix = arr.astype(np.float64)
+                # Also update the aggregated costs (log10 normalized) from the matrix
+                # Sum over replicas, then log10
+                sum_per_template = np.sum(arr, axis=1)
+                self._state_costs = np.log10(sum_per_template + 1.0)
+            elif arr.ndim == 1 and len(arr) == self.n_templates:
+                # Fallback: use the vector as aggregated costs (old behavior)
+                self._state_costs = np.log10(arr.astype(np.float64) + 1.0)
+                # Do not update the matrix, keep it as zeros
+            # else: ignore unrecognized shape
 
         if external_costs is not None:
             costs = np.array(external_costs, dtype=np.float64)
@@ -135,11 +156,32 @@ class GlobalRoutingEnv(gym.Env):
 
         change_penalty = 0.1 * num_changes
 
-        # reward = -makespan_scaled - change_penalty
-        reward = -(makespan_raw*2)/100_000_000
+        # Reward based on relative makespan improvement
+        current_makespan = float(np.max(costs))
 
+        if self._previous_makespan is None:
+            # First step: no improvement yet, store current makespan
+            self._previous_makespan = current_makespan
+            improvement_ratio = 0.0
+        else:
+            # Relative improvement (can be negative if makespan increases)
+            if self._previous_makespan > 0:
+                improvement_ratio = (self._previous_makespan - current_makespan) / self._previous_makespan
+            else:
+                improvement_ratio = 0.0
+
+        # Scale to get reward between roughly -10 and +10 (since improvement_ratio ∈ [-1, 1])
+        reward = 10.0 * improvement_ratio - change_penalty
+
+        self._previous_makespan = current_makespan
+
+        # Additional penalty if any replica has zero cost (inactive)
         if np.any(costs == 0.0) and np.sum(costs) > 0:
             reward -= 5.0
 
-        info = {'makespan': makespan_raw, 'jain_index': jain_index, 'worker_loads': self._state_worker_loads}
+        info = {
+            'makespan': makespan_raw,
+            'jain_index': jain_index,
+            'worker_loads': self._state_worker_loads
+        }
         return self._get_obs(), reward, False, False, info
