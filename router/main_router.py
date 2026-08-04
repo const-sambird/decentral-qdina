@@ -110,10 +110,9 @@ if __name__ == '__main__':
             print(f"\n--- [Master Orchestrator] Starting Global Episode {episode + 1}/{args.episodes} ---")
             
             # Dynamic epsilon decay for exploration-exploitation balance
-            total_episodes = args.episodes
-            epsilon = EPS_END + (EPS_START - EPS_END) * (1.0 - episode / total_episodes)
+            epsilon = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * episode / EPS_DECAY)
             servicer.epsilon = max(EPS_END, min(EPS_START, epsilon))
-
+            
             with servicer.lock:
                 servicer.stop_training_signal = False
                 servicer.steps_since_last_change = 0
