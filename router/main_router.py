@@ -104,7 +104,7 @@ if __name__ == '__main__':
         steps_per_episode = 100
         EPS_START = 0.9
         EPS_END = 0.05
-        EPS_DECAY = 70
+        EPS_DECAY = 60
         
         for episode in range(args.episodes):
             print(f"\n--- [Master Orchestrator] Starting Global Episode {episode + 1}/{args.episodes} ---")
