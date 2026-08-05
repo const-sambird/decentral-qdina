@@ -143,35 +143,15 @@ class GlobalRoutingEnv(gym.Env):
 
         num_changes = np.sum(old_routes != self._state_routes)
 
-        # Strong imbalance penalties based on coefficient of variation
-        mean_cost = np.mean(costs) + 1e-6
-        std_cost = np.std(costs)
-        cv = std_cost / mean_cost 
-        cost_imbalance_penalty = 0.5 * cv 
-
-        mean_load = np.mean(self._state_worker_loads) + 1e-6
-        std_load = np.std(self._state_worker_loads)
-        load_cv = std_load / mean_load
-        load_imbalance_penalty = 0.3 * load_cv 
-
         change_penalty = 0.1 * num_changes
 
         # Reward based on relative makespan improvement
         current_makespan = float(np.max(costs))
 
-        if self._previous_makespan is None:
-            # First step: no improvement yet, store current makespan
-            self._previous_makespan = current_makespan
-            improvement_ratio = 0.0
-        else:
-            # Relative improvement (can be negative if makespan increases)
-            if self._previous_makespan > 0:
-                improvement_ratio = (self._previous_makespan - current_makespan) / self._previous_makespan
-            else:
-                improvement_ratio = 0.0
-
         # Scale to get reward between roughly -10 and +10 (since improvement_ratio ∈ [-1, 1])
-        reward = 10.0 * improvement_ratio - change_penalty
+        reward = 7.0 - (makespan_raw / 100_000_000.0) * (4.0 / 3.0)
+        reward -= change_penalty
+        reward = max(-10.0, min(10.0, reward))
 
         self._previous_makespan = current_makespan
 
