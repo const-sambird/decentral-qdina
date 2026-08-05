@@ -89,13 +89,17 @@ class QDinaNetworkClient:
 
 
     def _init_agent_networks(self):
-        """Initialize the policy and target networks and the optimizer.
-
-        Chooses between classical DQN and quantum DQN based on `self.agent_mode`.
+        """
+        Initialize the policy and target networks and the optimizer.
+        Chooses between classical DQN and quantum DQN based on self.agent_mode.
+        For quantum mode, the number of qubits is dynamically computed to ensure that
+        the output dimension (2^n_qubits) is at least the number of actions.
         """
         n_actions = self.env.action_space.n
         n_observations = 2 * self.n_templates + self.n_candidates
+
         if self.agent_mode == 'classical':
+            # Classical DQN with two hidden layers
             self.policy_net = DQN(n_observations, n_actions, layer_features=[256, 128, 64])
             self.target_net = DQN(n_observations, n_actions, layer_features=[256, 128, 64])
             self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -103,14 +107,44 @@ class QDinaNetworkClient:
             self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-3)
             print(f"[Worker Client {self.replica_id}] Classical DQN Policy Network built successfully.")
         elif self.agent_mode == 'quantum':
-            n_observations = 2 * self.n_templates + self.n_candidates
-            self.policy_net = QuantumDQN(n_inputs=n_observations, n_qubits=5, n_actions=n_actions, qnn_type='twolocal', qnn_output='layer')
+            # Compute minimal number of qubits needed:
+            # We need 2^n_qubits >= n_actions. Use bit_length trick:
+            # (n_actions - 1).bit_length() gives ceil(log2(n_actions))
+            # We enforce a minimum of 8 qubits for stability.
+            n_qubits = max(8, int(n_actions - 1).bit_length())            
+
+            # Build the quantum DQN with the computed qubit count
+            self.policy_net = QuantumDQN(
+                n_inputs=n_observations,
+                n_qubits=n_qubits,
+                n_actions=n_actions,
+                qnn_type='twolocal',
+                qnn_output='layer',       # Use a classical output layer on top of QNN
+                n_shots=1024,
+                torch_device='cpu'        # Adjust if GPU available
+            )
+            # In quantum mode we do not maintain a separate target net; we can reuse the policy net
+            # but we keep it separate for consistency (soft updates would be needed).
+            # Here we create a copy for the target net (using the same architecture).
+            self.target_net = QuantumDQN(
+                n_inputs=n_observations,
+                n_qubits=n_qubits,
+                n_actions=n_actions,
+                qnn_type='twolocal',
+                qnn_output='layer',
+                n_shots=1024,
+                torch_device='cpu'
+            )
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+            self.target_net.eval()
+            
+            # Use SPSA optimizer for quantum network (gradient-free optimization)
             self.optimizer = SPSAOptimiser(
-                self.policy_net, 
-                lr=0.1, 
+                self.policy_net,
+                lr=0.1,
                 device=next(self.policy_net.parameters()).device
             )
-            print(f"[Worker Client {self.replica_id}] Quantum DQN Parameterized Circuit compiled successfully.")
+            print(f"[Worker Client {self.replica_id}] Quantum DQN with {n_qubits} qubits built successfully.")
 
     def _select_action(self, state):
         """Select an action using an epsilon-greedy policy.
