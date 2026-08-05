@@ -12,6 +12,7 @@ if __name__ == '__main__':
     parser.add_argument('--server', type=str, default='localhost:50051', help="Master router gRPC server network address")
     parser.add_argument('--config', type=str, default='replicas.csv', help="Path to the replicas configuration CSV file")
     parser.add_argument('--budget-mode', type=str, default='enforce', choices=['enforce', 'ignore'], help="Budget enforcement mode: 'enforce' (hard cap) or 'ignore' (no cap, only penalty).")
+    parser.add_argument('--storage-budget', type=int, default=5_000_000_000, help="Storage budget in bytes for indexes (default: 5 GB)")
     args = parser.parse_args()
     
     # Load settings from CSV
@@ -38,7 +39,7 @@ if __name__ == '__main__':
         db_user=cfg['user'],
         db_password=cfg['password'],
         db_name=cfg['dbname'],
-        storage_budget=5_000_000_000
+        storage_budget=args.storage_budget
     )
     
     try:

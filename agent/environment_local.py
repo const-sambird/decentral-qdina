@@ -114,7 +114,7 @@ class LocalIndexingEnv(gym.Env):
         Returns:
             list[float]: Estimated costs per template (length = self.n_templates).
         """
-        print(f"[Worker {self.replica_id}] Start _estimate_workload_costs")
+        # print(f"[Worker {self.replica_id}] Start _estimate_workload_costs")
         tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
         if tables_to_clean:
             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
@@ -133,7 +133,7 @@ class LocalIndexingEnv(gym.Env):
             p.start()
             costs = local_queue.get(timeout=600)
             p.join()
-            print(f"[Worker {self.replica_id}] End _estimate_workload_costs")
+            # print(f"[Worker {self.replica_id}] End _estimate_workload_costs")
             return costs
         except Exception as e:
             print(f"[Worker Indexing Env {self.replica_id} Warning] Échec calcul coûts (Port {self.port}) : {e}")
