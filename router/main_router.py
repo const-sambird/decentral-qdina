@@ -42,7 +42,10 @@ if __name__ == '__main__':
     parser.add_argument('--workload-dir', type=str, default='./workload_output', help="Directory for individual query files")
     parser.add_argument('--templates-seed', type=str, default='templates.txt', help="Seed file containing raw query SQL text strings")
     parser.add_argument('--config', type=str, default='replicas.csv', help="Cluster replicas topology configuration file")
-    
+    parser.add_argument('--metrics', type=str, default='metrics.csv', help='Output CSV file for metrics')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
+    parser.add_argument('--param-layers', type=int, default=10, help='Number of ansatz repetitions (for quantum workers)')
+
     args = parser.parse_args()
     
     replicas_config = parse_replicas_csv(args.config)
@@ -69,7 +72,15 @@ if __name__ == '__main__':
 
     # Instantiate the Server Servicer using the dynamic configuration parameters discovered
     print(f"[Master Orchestrator] Initializing QDinaServerServicer with {num_replicas} replicas and 22 templates...")
-    servicer = QDinaServerServicer(n_replicas=num_replicas, n_templates=22, batch_size=64)
+
+    metrics_file = args.metrics
+    if args.seed is not None:
+        base, ext = os.path.splitext(metrics_file)
+        metrics_file = f"{base}_seed_{args.seed}{ext}"
+
+    servicer = QDinaServerServicer(n_replicas=num_replicas, n_templates=22, batch_size=64,
+                                metrics_file=metrics_file, param_layers=args.param_layers)
+
     servicer.execution_mode = args.mode
     servicer.current_workload_pool = initial_queries
     servicer.workload_templates_map = initial_map
@@ -165,6 +176,7 @@ if __name__ == '__main__':
             servicer.agent.target_net.load_state_dict(servicer.agent.policy_net.state_dict())
             
             servicer.export_benchmark_files(output_dir=".")
+            servicer.close_metrics()
 
         print("\n[Master Orchestrator] Training completed successfully!")
         print("[Master Orchestrator] Finalizing outstanding gRPC requests (grace period)...")

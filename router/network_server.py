@@ -14,7 +14,7 @@ from router.router_agent import RouterAgent
 from common.replay_memory import ReplayMemory
 
 class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
-    def __init__(self, n_replicas, n_templates=22, batch_size=16):
+    def __init__(self, n_replicas, n_templates=22, batch_size=16, metrics_file=None, param_layers=10):
         '''
         gRPC Server Servicer coordinating decentralized worker nodes.
         '''
@@ -67,6 +67,20 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.steps_since_last_change = 0
 
         self.knapsack_metrics = {}
+
+
+        self.metrics_file = None
+        self.csv_writer = None
+        self.total_actions = 0  # compteur global
+        if metrics_file:
+            self.metrics_file = open(metrics_file, 'w', newline='')
+            self.csv_writer = csv.writer(self.metrics_file)
+            self.csv_writer.writerow([
+                "episode", "step", "cumulative_actions",
+                "makespan", "jain_index", "reward", "epsilon", "workers", "param_layers"
+            ])
+
+        self.param_layers = param_layers
 
 
     def initialize_routing_table(self):
@@ -125,7 +139,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             # If the router hasn't finished waiting for all workers to register,
             # send an empty slice and tell the worker not to stop yet.
             if not self.ready_to_train:
-                return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon)
+                return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
 
             worker_id = request.replica_id
 
@@ -152,7 +166,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         if len(self.registered_workers) == 0:
                             self.stop_training_signal = False
                             self.episode_reset_acks.clear()
-                            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon)
+                            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
                 
                     # Only accept messages with local_reset=True; others are ignored.
                     if request.local_reset:
@@ -173,7 +187,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                             f"({len(self.episode_reset_acks)}/{len(self.registered_workers)})")
                     else:
                         # Normal metrics during stop signal are ignored – we force a reset.
-                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon)
+                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
                 
                     # Check if all workers have acknowledged the reset.
                     if len(self.episode_reset_acks) >= len(self.registered_workers):
@@ -190,11 +204,12 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         return qdina_pb2.WorkloadSlice(
                             stop_training=False,
                             queries=self.next_workload_slices.get(worker_id, []),
-                            epsilon=self.epsilon
+                            epsilon=self.epsilon,
+                            param_layers=self.param_layers
                         )
                     else:
                         # Not all workers have reset yet; keep waiting.
-                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon)
+                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
 
                 # Store the metrics that this worker sent for the current step.
                 if request.local_reset:
@@ -303,6 +318,21 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                     worker_loads=worker_loads_current
                                 )
 
+                                if self.csv_writer is not None:
+                                    self.total_actions += 1
+                                    self.csv_writer.writerow([
+                                        self.global_epoch,
+                                        self.global_step_counter,
+                                        self.total_actions,
+                                        int(np.max(costs_array)),
+                                        info.get('jain_index', 1.0),
+                                        reward,
+                                        self.epsilon,
+                                        len(sorted_workers),
+                                        self.param_layers
+                                    ])
+                                    self.metrics_file.flush()
+
                                 # Update the routing table (which replica handles each template).
                                 self.routing_table_state = np.copy(next_state[:self.env.n_templates])
                                 # For each worker, compute the list of queries they will handle next.
@@ -349,7 +379,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 self.lock.notify_all()
                                 # We don't set stop_training_signal anymore.
                                 self.stop_training_signal = True
-                                return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon)
+                                return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
                         else:
                             # Another worker is already the leader; wait for it.
                             self.lock.wait()
@@ -359,19 +389,20 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
                 # After the loop, if the stop signal is active, tell the worker to stop.
                 if self.stop_training_signal:
-                    return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon)
+                    return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
 
                 # Otherwise, return the queries assigned to this specific worker.
                 return qdina_pb2.WorkloadSlice(
                     stop_training=False,
                     queries=self.next_workload_slices.get(worker_id, []),
-                    epsilon=self.epsilon
+                    epsilon=self.epsilon,
+                    param_layers=self.param_layers
                 )
 
         except Exception as e:
             # Catch any unexpected error and force a stop to avoid hanging workers.
             print(f"[CRITICAL] Unhandled error in SubmitMetricsAndGetWorkload: {e}")
-            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon)
+            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
 
     def _get_routed_slice_for_node(self, node_id):
         """Compute the list of queries to be routed to a specific worker node.
@@ -493,3 +524,11 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     writer.writerow(row)
 
         print(f"[Benchmark Export] Config exported successfully: {config_path}")
+
+    def close_metrics(self):
+        """
+        Close the metrics CSV file if it was opened, ensuring all data is flushed to disk.
+        """
+        if self.metrics_file:
+            self.metrics_file.close()
+            self.metrics_file = None

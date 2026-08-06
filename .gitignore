@@ -14,3 +14,4 @@ venv/
 tpc-h
 config.csv
 routes.csv
+metrics.csv

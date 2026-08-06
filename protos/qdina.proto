@@ -35,4 +35,5 @@ message WorkloadSlice {
     bool stop_training = 1;        // Signal to stop the current episode
     repeated string queries = 2;   // The specific slice of SQL queries to evaluate
     float epsilon = 3;             // Exploration rate for epsilon-greedy policy (decayed globally)
+    int32 param_layers = 4;        // Number of ansatz repetitions for quantum workers
 }

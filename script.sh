@@ -28,7 +28,7 @@ fi
 
 if [ "$1" == "--node" ] && [ "$2" == "router" ]; then
     echo "Starting the Central Router in the 'qdina' tmux session..."
-    tmux send-keys -t qdina "time python3 -m router.main_router --mode drift --episodes 100 --config replicas-cloudlab.csv --workload-dir ./workload_output" C-m
+    tmux send-keys -t qdina "time python3 -m router.main_router --mode drift --episodes 100 --config replicas-cloudlab.csv --workload-dir ./workload_output --seed 100" C-m
 elif [ "$1" == "--node" ] && [ "$2" -ge 1 ] && [ "$2" -le 6 ] 2>/dev/null; then
     ROUTER_IP="10.10.1.1"
     echo "Starting Agent Node $2 connecting to Router at ${ROUTER_IP}:50051..."

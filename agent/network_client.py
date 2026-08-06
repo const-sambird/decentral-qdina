@@ -63,6 +63,7 @@ class QDinaNetworkClient:
 
         self._step_counter = 0
         self.target_update_freq = 10
+        self.param_layers = 5
 
     def register_to_master(self, local_hostname: str = '127.0.0.1', local_port: int = 5432):
         """Register this worker node with the master router via gRPC.
@@ -121,7 +122,8 @@ class QDinaNetworkClient:
                 qnn_type='twolocal',
                 qnn_output='layer',       # Use a classical output layer on top of QNN
                 n_shots=1024,
-                torch_device='cpu'        # Adjust if GPU available
+                torch_device='cpu',        # Adjust if GPU available
+                param_layers=self.param_layers
             )
             # In quantum mode we do not maintain a separate target net; we can reuse the policy net
             # but we keep it separate for consistency (soft updates would be needed).
@@ -133,7 +135,8 @@ class QDinaNetworkClient:
                 qnn_type='twolocal',
                 qnn_output='layer',
                 n_shots=1024,
-                torch_device='cpu'
+                torch_device='cpu',
+                param_layers=self.param_layers
             )
             self.target_net.load_state_dict(self.policy_net.state_dict())
             self.target_net.eval()
@@ -334,6 +337,9 @@ class QDinaNetworkClient:
 
                 if response.epsilon is not None:
                     self.epsilon = response.epsilon
+
+                if response.param_layers is not None:
+                    self.param_layers = response.param_layers
                 
                 print(f"[Worker Client {self.replica_id}] Sliced workload received containing {len(current_queries)} active queries.")
                 dynamic_templates_map = [hash(q_text) % self.n_templates for q_text in current_queries]
