@@ -176,9 +176,9 @@ if __name__ == '__main__':
             servicer.agent.target_net.load_state_dict(servicer.agent.policy_net.state_dict())
             
             servicer.export_benchmark_files(output_dir=".")
-            servicer.close_metrics()
 
         print("\n[Master Orchestrator] Training completed successfully!")
+        servicer.close_metrics()
         print("[Master Orchestrator] Finalizing outstanding gRPC requests (grace period)...")
         server.stop(grace=3.0)
         print("[Master Orchestrator] Central Router server closed cleanly. Exiting.")
