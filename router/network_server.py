@@ -153,20 +153,20 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 # Phase 1: episode end – wait for reset acknowledgments
                 if self.stop_training_signal:
                     # Remove dead workers that haven't sent any request for more than 10 seconds.
-                    now = time.time()
-                    dead_workers = [wid for wid, info in self.registered_workers.items()
-                                    if now - info['last_seen'] > 3600.0]
-                    for wid in dead_workers:
-                        del self.registered_workers[wid]
-                        self.episode_reset_acks.discard(wid)
-                        self.collected_metrics.pop(wid, None)
-                    if dead_workers:
-                        print(f"[Server] Removed dead workers during reset: {dead_workers}")
-                        # If all workers died, reset the episode state and continue
-                        if len(self.registered_workers) == 0:
-                            self.stop_training_signal = False
-                            self.episode_reset_acks.clear()
-                            return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
+                    # now = time.time()
+                    # dead_workers = [wid for wid, info in self.registered_workers.items()
+                    #                 if now - info['last_seen'] > 3600.0]
+                    # for wid in dead_workers:
+                    #     del self.registered_workers[wid]
+                    #     self.episode_reset_acks.discard(wid)
+                    #     self.collected_metrics.pop(wid, None)
+                    # if dead_workers:
+                    #     print(f"[Server] Removed dead workers during reset: {dead_workers}")
+                    #     # If all workers died, reset the episode state and continue
+                    #     if len(self.registered_workers) == 0:
+                    #         self.stop_training_signal = False
+                    #         self.episode_reset_acks.clear()
+                    #         return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
                 
                     # Only accept messages with local_reset=True; others are ignored.
                     if request.local_reset:
@@ -245,15 +245,15 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 # a stop signal. We cannot move forward until all workers have submitted.
                 while self.global_step_counter == target_step:
                     # Remove workers that have not sent any request for more than 10 seconds.
-                    now = time.time()
-                    dead_workers = [wid for wid, info in self.registered_workers.items()
-                                    if now - info['last_seen'] > 300.0]
-                    for wid in dead_workers:
-                        del self.registered_workers[wid]
-                        self.collected_metrics.pop(wid, None)
-                    if dead_workers:
-                        self.lock.notify_all()
-                        continue
+                    # now = time.time()
+                    # dead_workers = [wid for wid, info in self.registered_workers.items()
+                    #                 if now - info['last_seen'] > 300.0]
+                    # for wid in dead_workers:
+                    #     del self.registered_workers[wid]
+                    #     self.collected_metrics.pop(wid, None)
+                    # if dead_workers:
+                    #     self.lock.notify_all()
+                    #     continue
 
                     # If all currently registered workers have submitted, proceed.
                     if len(self.collected_metrics) >= len(self.registered_workers):
