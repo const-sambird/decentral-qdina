@@ -4,6 +4,7 @@ import numpy as np
 from multiprocessing import Queue, Process
 from agent.database import Replica
 from agent.cost_estimator import CostEstimator
+from concurrent.futures import ThreadPoolExecutor
 
 class LocalIndexingEnv(gym.Env):
     def __init__(self, replica_id: int, hostname: str, port: int, user: str, password: str,
@@ -256,8 +257,31 @@ class LocalIndexingEnv(gym.Env):
             self._current_indexes[action] = 0
             self._spaces_used -= size
 
-        # Estimate costs after modification
-        current_costs = self._estimate_workload_costs(queries)
+        # Estimate costs 
+        # Run current cost and knapsack cost in parallel when in 'ignore' mode with gains
+        if self.budget_mode == 'ignore' and self.index_gains:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                # Start the current cost estimation
+                future_current = executor.submit(self._estimate_workload_costs, queries)
+                
+                # Start the knapsack cost estimation only if we have a valid selection
+                knapsack_indexes = self.get_knapsack_selection()
+                if knapsack_indexes:
+                    future_knapsack = executor.submit(self._estimate_cost_with_indexes, queries, knapsack_indexes)
+                else:
+                    future_knapsack = None
+
+                # Wait for both results
+                current_costs = future_current.result()
+                if future_knapsack is not None:
+                    costs_knapsack = future_knapsack.result()
+                else:
+                    costs_knapsack = [0.0] * self.n_templates
+        else:
+            # Sequential execution for 'enforce' mode or when no gains exist
+            current_costs = self._estimate_workload_costs(queries)
+            costs_knapsack = [0.0] * self.n_templates
+
         current_total = sum(current_costs)
         self.last_costs = current_costs[:]
 
@@ -267,16 +291,6 @@ class LocalIndexingEnv(gym.Env):
             self.index_gains[action] = gain
         else:
             self.index_gains.pop(action, None)
-
-        # Compute knapsack costs only in 'ignore' mode, and only if we have any gains
-        if self.budget_mode == 'ignore' and self.index_gains:
-            knapsack_indexes = self.get_knapsack_selection()
-            if knapsack_indexes:
-                costs_knapsack = self._estimate_cost_with_indexes(queries, knapsack_indexes)
-            else:
-                costs_knapsack = [0.0] * self.n_templates
-        else:
-            costs_knapsack = [0.0] * self.n_templates
 
         used_storage = self._spaces_used
 
@@ -488,3 +502,5 @@ class LocalIndexingEnv(gym.Env):
         costs = local_queue.get(timeout=600)
         p.join()
         return costs
+
+
