@@ -157,20 +157,11 @@ if __name__ == '__main__':
             # Increased wait time and added a timeout to avoid infinite blocking
             print("[Master Orchestrator] Waiting for all workers to acknowledge episode reset...")
             wait_counter = 0
-            max_wait_seconds = 600  # Maximum 10 minutes of waiting
             while True:
                 with servicer.lock:
                     if not servicer.stop_training_signal:
                         break
-                time.sleep(2.0)  # Increased from 0.5s to 2s
-                wait_counter += 2
-                if wait_counter % 20 == 0:
-                    print(f"[Master Orchestrator] Still waiting for workers... ({wait_counter}s)")
-                if wait_counter >= max_wait_seconds:
-                    print("[Master Orchestrator] Timeout reached while waiting for workers. Forcing continuation.")
-                    with servicer.lock:
-                        servicer.stop_training_signal = False
-                    break
+                time.sleep(2.0)
             print("[Master Orchestrator] All workers have reset. Proceeding to next episode.")
  
             servicer.agent.target_net.load_state_dict(servicer.agent.policy_net.state_dict())
