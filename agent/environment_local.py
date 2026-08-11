@@ -1,4 +1,3 @@
-# File: agent/environment_local.py
 import gymnasium as gym
 import numpy as np
 from multiprocessing import Queue, Process
@@ -36,7 +35,7 @@ class LocalIndexingEnv(gym.Env):
         self.max_stagnation_steps = max_stagnation_steps
         self.budget_mode = budget_mode
 
-        self.n_actions = self.n_candidates + 1
+        self.n_actions = 2 * self.n_candidates + 1
         self.action_space = gym.spaces.Discrete(self.n_actions)
 
         self.observation_space = gym.spaces.Box(
@@ -67,8 +66,8 @@ class LocalIndexingEnv(gym.Env):
         self.best_indexes = None
         self.best_cost = float('inf')
 
-        self.index_gains = {} 
-        
+        self.index_gains = {}
+
     def _get_candidate_size(self, candidate) -> int:
         """
         Compute the real size (in bytes) of a candidate index using HypoPG.
@@ -115,7 +114,6 @@ class LocalIndexingEnv(gym.Env):
         Returns:
             list[float]: Estimated costs per template (length = self.n_templates).
         """
-        # print(f"[Worker {self.replica_id}] Start _estimate_workload_costs")
         tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
         if tables_to_clean:
             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
@@ -134,7 +132,6 @@ class LocalIndexingEnv(gym.Env):
             p.start()
             costs = local_queue.get(timeout=600)
             p.join()
-            # print(f"[Worker {self.replica_id}] End _estimate_workload_costs")
             return costs
         except Exception as e:
             print(f"[Worker Indexing Env {self.replica_id} Warning] Échec calcul coûts (Port {self.port}) : {e}")
@@ -204,7 +201,11 @@ class LocalIndexingEnv(gym.Env):
                 if 0 <= t_id < self.n_templates:
                     self._current_workload_state[t_id] += 1
 
-        no_op_action = self.n_actions - 1
+        # --- Decode action ---
+        # Actions 0..n_candidates-1  -> add index
+        # Actions n_candidates..2*n_candidates-1 -> drop index
+        # Action 2*n_candidates -> no-op
+        no_op_action = 2 * self.n_candidates
 
         # Handle no‑op action
         if action == no_op_action:
@@ -224,6 +225,39 @@ class LocalIndexingEnv(gym.Env):
                 'costs_knapsack': 0
             }
 
+        # Check if action is valid according to current state
+        # For add actions, index must be 0; for drop actions, index must be 1
+        if action < self.n_candidates:
+            # Add action
+            idx = action
+            if self._current_indexes[idx] == 1:
+                # Invalid: index already present -> penalize and return
+                reward = -1.0
+                return self._get_obs(), reward, False, False, {
+                    'costs': self.last_costs,   # keep previous costs
+                    'total_cost': sum(self.last_costs),
+                    'storage': self._spaces_used,
+                    'agent_mode': self.agent_type,
+                    'costs_knapsack': 0
+                }
+            # Valid add
+            adding = True
+        else:
+            # Drop action
+            idx = action - self.n_candidates
+            if self._current_indexes[idx] == 0:
+                # Invalid: index already absent -> penalize and return
+                reward = -1.0
+                return self._get_obs(), reward, False, False, {
+                    'costs': self.last_costs,
+                    'total_cost': sum(self.last_costs),
+                    'storage': self._spaces_used,
+                    'agent_mode': self.agent_type,
+                    'costs_knapsack': 0
+                }
+            # Valid drop
+            adding = False
+
         # Save old state to know if we are adding or dropping
         old_indexes = self._current_indexes.copy()
         old_storage = self._spaces_used
@@ -233,9 +267,9 @@ class LocalIndexingEnv(gym.Env):
         initial_total = sum(self.initial_costs)
 
         # Apply the action (add or drop)
-        if self._current_indexes[action] == 0:
+        if adding:
             # Adding an index
-            candidate = self.candidates[action]
+            candidate = self.candidates[idx]
             required_space = self._get_candidate_size(candidate)
             # Budget check only in 'enforce' mode
             if self.budget_mode == 'enforce' and self._spaces_used + required_space > self.storage_budget:
@@ -248,22 +282,22 @@ class LocalIndexingEnv(gym.Env):
                     'costs_knapsack': 0
                 }
             else:
-                self._current_indexes[action] = 1
+                self._current_indexes[idx] = 1
                 self._spaces_used += required_space
         else:
             # Dropping an index
-            candidate = self.candidates[action]
+            candidate = self.candidates[idx]
             size = self._get_candidate_size(candidate)
-            self._current_indexes[action] = 0
+            self._current_indexes[idx] = 0
             self._spaces_used -= size
 
-        # Estimate costs 
+        # Estimate costs
         # Run current cost and knapsack cost in parallel when in 'ignore' mode with gains
         if self.budget_mode == 'ignore' and self.index_gains:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 # Start the current cost estimation
                 future_current = executor.submit(self._estimate_workload_costs, queries)
-                
+
                 # Start the knapsack cost estimation only if we have a valid selection
                 knapsack_indexes = self.get_knapsack_selection()
                 if knapsack_indexes:
@@ -287,10 +321,10 @@ class LocalIndexingEnv(gym.Env):
 
         # Compute the gain (cost reduction) and update index_gains
         gain = initial_total - current_total
-        if gain > 0 and self._current_indexes[action] == 1:
-            self.index_gains[action] = gain
+        if gain > 0 and self._current_indexes[idx] == 1:
+            self.index_gains[idx] = gain
         else:
-            self.index_gains.pop(action, None)
+            self.index_gains.pop(idx, None)
 
         used_storage = self._spaces_used
 
@@ -308,8 +342,7 @@ class LocalIndexingEnv(gym.Env):
             normalized_cost_impact = 0.0
 
         # Non-linear transformation to heavily penalize cost increases and reward decreases
-        if old_indexes[action] == 1:
-            # Dropping an index
+        if not adding:  # Dropping an index
             if normalized_cost_impact > 0:
                 # Quadratic penalty: (1 + impact)^2 - 1
                 penalty_cost = (1.0 + normalized_cost_impact) ** 2 - 1.0
@@ -318,8 +351,7 @@ class LocalIndexingEnv(gym.Env):
                 penalty_cost = -0.1 * normalized_cost_saving
             bonus_drop = 1.0
             reward = -penalty_cost - storage_penalty - toggle_penalty - active_index_penalty + bonus_drop
-        else:
-            # Adding an index
+        else:  # Adding an index
             if normalized_cost_saving > 0.01:
                 # Reward using log to keep it bounded
                 reward = np.log1p(normalized_cost_saving) - storage_penalty - toggle_penalty - active_index_penalty
@@ -351,7 +383,7 @@ class LocalIndexingEnv(gym.Env):
         # Reset if we have stagnated for max_stagnation_steps
         if (self.best_cost_so_far is not None and self.best_cost_so_far > 0 and
             self.stagnation_counter >= self.max_stagnation_steps):
-            
+
             # Try to restore a saved best configuration if it is significantly better
             if (self.best_indexes is not None and
                 current_total > 2.0 * self.best_cost and
@@ -419,6 +451,24 @@ class LocalIndexingEnv(gym.Env):
             costs_norm
         ])
 
+    def get_action_mask(self):
+        """
+        Returns a boolean mask of size n_actions.
+        True means the action is allowed; False means it is not allowed.
+        This mask can be used by the agent to avoid invalid actions.
+        """
+        mask = np.ones(self.n_actions, dtype=bool)
+        # Disable add actions for indexes already present
+        for i in range(self.n_candidates):
+            if self._current_indexes[i] == 1:
+                mask[i] = False
+        # Disable drop actions for indexes already absent
+        for i in range(self.n_candidates):
+            if self._current_indexes[i] == 0:
+                mask[self.n_candidates + i] = False
+        # The no-op action (last action) is always allowed
+        return mask
+
     def get_active_index_names(self):
         """Generate human-readable names for all currently active indexes.
 
@@ -452,31 +502,30 @@ class LocalIndexingEnv(gym.Env):
             if gain > 0:
                 size = self._get_candidate_size(self.candidates[action])
                 items.append((gain, size, action))
-        
+
         if not items:
             return []
-        
+
         selected_items = select_indexes_knapsack(
             [(gain, size) for gain, size, _ in items],
             self.storage_budget
         )
 
         selected_actions = []
-        consumed_acts = set() 
-        
+        consumed_acts = set()
+
         for gain, size in selected_items:
             for g, s, act in items:
                 if g == gain and s == size and act not in consumed_acts:
                     selected_actions.append(act)
                     consumed_acts.add(act)
                     break
-        
+
         selected_indexes = []
         for act in selected_actions:
             table, columns = self.candidates[act]
             selected_indexes.append((table, columns))
         return selected_indexes
-
 
     def _estimate_cost_with_indexes(self, queries, indexes):
         """Estimate the total cost of the given queries assuming a specific set of hypothetical indexes.
@@ -502,5 +551,3 @@ class LocalIndexingEnv(gym.Env):
         costs = local_queue.get(timeout=600)
         p.join()
         return costs
-
-
