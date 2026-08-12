@@ -14,12 +14,13 @@ from router.router_agent import RouterAgent
 from common.replay_memory import ReplayMemory
 
 class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
-    def __init__(self, n_replicas, n_templates=22, batch_size=16, metrics_file=None, param_layers=10):
+    def __init__(self, n_replicas, n_templates=22, batch_size=16, metrics_file=None, param_layers=10, steps_per_episode=5):
         '''
         gRPC Server Servicer coordinating decentralized worker nodes.
         '''
         self.n_templates = n_templates
         self.n_replicas = n_replicas
+        self.steps_per_episode = steps_per_episode
 
         self.env = GlobalRoutingEnv(n_templates=n_templates, n_replicas=n_replicas)
         self.agent = RouterAgent(n_templates=n_templates, n_replicas=n_replicas, n_actions=self.env.n_actions)
@@ -53,7 +54,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
         self.last_known_metrics = {}
         self.worker_workload_versions = {}
-        self.steps_per_episode = 20
         self.step_computed = False 
 
         # For tracking episode reset acknowledgments
@@ -81,6 +81,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             ])
 
         self.param_layers = param_layers
+        self.reset_complete = False
 
 
     def initialize_routing_table(self):
@@ -150,56 +151,43 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 if worker_id in self.registered_workers:
                     self.registered_workers[worker_id]['last_seen'] = time.time()
 
-                # Phase 1: episode end – wait for reset acknowledgments
                 if self.stop_training_signal:
-                    # Remove dead workers that haven't sent any request for more than 10 seconds.
-                    # now = time.time()
-                    # dead_workers = [wid for wid, info in self.registered_workers.items()
-                    #                 if now - info['last_seen'] > 3600.0]
-                    # for wid in dead_workers:
-                    #     del self.registered_workers[wid]
-                    #     self.episode_reset_acks.discard(wid)
-                    #     self.collected_metrics.pop(wid, None)
-                    # if dead_workers:
-                    #     print(f"[Server] Removed dead workers during reset: {dead_workers}")
-                    #     # If all workers died, reset the episode state and continue
-                    #     if len(self.registered_workers) == 0:
-                    #         self.stop_training_signal = False
-                    #         self.episode_reset_acks.clear()
-                    #         return qdina_pb2.WorkloadSlice(stop_training=False, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
-                
-                    # Only accept messages with local_reset=True; others are ignored.
+                    # Si le reset est déjà complet, on ne fait que renvoyer stop_training=True
+                    if self.reset_complete:
+                        return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
+
+                    # Traitement des acquittements
                     if request.local_reset:
-                        total_cost = self.last_valid_total_cost.get(worker_id, 0.0)
-                        costs = self.last_valid_template_costs.get(worker_id, [0.0]*self.n_templates)
-                        # Stocker les index knapsack dans la variable dédiée
-                        self.knapsack_metrics[worker_id] = {
-                            'total_cost': total_cost,
-                            'costs': costs,
-                            'storage_used': request.storage_used,
-                            'indexes': list(request.active_indexes),
-                            'local_reset': True
-                        }
-                        # On peut aussi garder last_known_metrics pour d'autres usages
-                        self.last_known_metrics[worker_id] = self.knapsack_metrics[worker_id].copy()
+                        # ... (récupération des métriques comme avant)
                         self.episode_reset_acks.add(worker_id)
                         print(f"[Server] Worker {worker_id} acknowledged episode reset. "
                             f"({len(self.episode_reset_acks)}/{len(self.registered_workers)})")
                     else:
-                        # Normal metrics during stop signal are ignored – we force a reset.
                         return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
-                
-                    # Check if all workers have acknowledged the reset.
+
+                    # Vérifier si tous les workers ont acquitté
                     if len(self.episode_reset_acks) >= len(self.registered_workers):
-                        print("[Server] All workers acknowledged reset. Starting next episode.")
-                        self.stop_training_signal = False
+                        print("[Server] All workers acknowledged reset. Waiting for main loop to start next episode.")
+                        self.reset_complete = True
                         self.episode_reset_acks.clear()
                         self.collected_metrics.clear()
+                        # Reset the global step counter NOW to avoid any extra step
+                        self.global_step_counter = 0
+                        self.steps_since_last_change = 0
+
+                        # NOTIFY the main loop that reset is complete
+                        self.lock.notify_all()
+
+                        # Wait for the main loop to clear the stop signal
+                        while self.stop_training_signal:
+                            self.lock.wait()
+
+                        # Signal cleared – prepare slices for the new episode
+                        self.reset_complete = False
                         self.next_workload_slices = {
                             w_id: self._get_routed_slice_for_node(w_id)
                             for w_id in self.registered_workers.keys()
                         }
-                        
                         print(f"[DEBUG] Next slices sizes: { {w: len(self.next_workload_slices.get(w, [])) for w in self.registered_workers} }")
                         return qdina_pb2.WorkloadSlice(
                             stop_training=False,
@@ -208,9 +196,9 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                             param_layers=self.param_layers
                         )
                     else:
-                        # Not all workers have reset yet; keep waiting.
+                        # Pas encore tous acquittés
                         return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
-
+                
                 # Store the metrics that this worker sent for the current step.
                 if request.local_reset:
                     # A local reset (budget exceeded) occurred; reuse the last valid costs.
@@ -245,15 +233,15 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 # a stop signal. We cannot move forward until all workers have submitted.
                 while self.global_step_counter == target_step:
                     # Remove workers that have not sent any request for more than 10 seconds.
-                    # now = time.time()
-                    # dead_workers = [wid for wid, info in self.registered_workers.items()
-                    #                 if now - info['last_seen'] > 300.0]
-                    # for wid in dead_workers:
-                    #     del self.registered_workers[wid]
-                    #     self.collected_metrics.pop(wid, None)
-                    # if dead_workers:
-                    #     self.lock.notify_all()
-                    #     continue
+                    now = time.time()
+                    dead_workers = [wid for wid, info in self.registered_workers.items()
+                                    if now - info['last_seen'] > 300.0]
+                    for wid in dead_workers:
+                        del self.registered_workers[wid]
+                        self.collected_metrics.pop(wid, None)
+                    if dead_workers:
+                        self.lock.notify_all()
+                        continue
 
                     # If all currently registered workers have submitted, proceed.
                     if len(self.collected_metrics) >= len(self.registered_workers):
@@ -361,15 +349,25 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                     self.agent.learn(self.router_memory, self.batch_size)
                                     self.agent.soft_update()
 
-                                # Advance to the next step.
-                                self.global_step_counter += 1
-                                # Clear the collected metrics for the next step.
+                                # Check if this was the last step (before increment)
+                                if self.global_step_counter == self.steps_per_episode - 1:
+                                    # Last step: signal stop, do NOT compute slices for next step
+                                    self.stop_training_signal = True
+                                    self.global_step_counter += 1
+                                    self.next_workload_slices = {}  # empty, will not be used
+                                else:
+                                    # Normal step: compute slices for the next step
+                                    self.routing_table_state = np.copy(next_state[:self.env.n_templates])
+                                    self.next_workload_slices = {
+                                        w_id: self._get_routed_slice_for_node(w_id)
+                                        for w_id in self.registered_workers.keys()
+                                    }
+                                    self.global_step_counter += 1
+
+                                # Clear metrics and release leader
                                 self.collected_metrics.clear()
-                                # Release the leader role.
                                 self.step_computed = False
-                                # Wake up all waiting workers so they can proceed.
                                 self.lock.notify_all()
-                                # Exit the while loop because the step has changed.
                                 break
 
                             except Exception as e:

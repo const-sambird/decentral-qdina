@@ -66,7 +66,8 @@ if __name__ == '__main__':
     initial_queries, initial_map = load_training_set_queries(args.workload_dir, fraction=1.0)
     n_templates = 22
     initial_map = [t % n_templates for t in initial_map]
-    
+    steps_per_episode = 100
+
     # Initialize the WorkloadManager with the loaded queries and mapping
     workload_mgr = WorkloadManager(initial_queries, initial_map, execution_mode=args.mode, fraction=1.0)
 
@@ -79,7 +80,7 @@ if __name__ == '__main__':
         metrics_file = f"{base}_seed_{args.seed}{ext}"
 
     servicer = QDinaServerServicer(n_replicas=num_replicas, n_templates=22, batch_size=64,
-                                metrics_file=metrics_file, param_layers=args.param_layers)
+                                metrics_file=metrics_file, param_layers=args.param_layers, steps_per_episode=steps_per_episode)
 
     servicer.execution_mode = args.mode
     servicer.current_workload_pool = initial_queries
@@ -112,7 +113,6 @@ if __name__ == '__main__':
 
         print(f"[Master Orchestrator] Total queries in initial workload: {len(initial_queries)}")
         
-        steps_per_episode = 100
         EPS_START = 0.9
         EPS_END = 0.05
         EPS_DECAY = 50
@@ -149,23 +149,41 @@ if __name__ == '__main__':
                 time.sleep(0.05)
 
             print(f"[Master Orchestrator] Global Episode {episode + 1} Done. Broadcasting stop_training signal.")
-            with servicer.lock:
-                servicer.stop_training_signal = True
-                servicer.lock.notify_all()
+            # with servicer.lock:
+            #     servicer.stop_training_signal = True
+            #     servicer.lock.notify_all()
 
             # Wait for all workers to acknowledge the episode reset before proceeding
             # Increased wait time and added a timeout to avoid infinite blocking
+
             print("[Master Orchestrator] Waiting for all workers to acknowledge episode reset...")
             wait_counter = 0
-            while True:
-                with servicer.lock:
-                    if not servicer.stop_training_signal:
+            max_wait_seconds = 600
+
+            with servicer.lock:
+                while not servicer.reset_complete:
+                    # Wait up to 1 second for a notification, then check again
+                    servicer.lock.wait(timeout=1.0)
+                    wait_counter += 1
+                    if wait_counter % 10 == 0:
+                        print(f"[Master Orchestrator] Still waiting for workers... ({wait_counter}s)")
+                    if wait_counter >= max_wait_seconds:
+                        print("[Master Orchestrator] Timeout reached. Forcing continuation.")
+                        servicer.global_step_counter = 0
+                        servicer.steps_since_last_change = 0
+                        servicer.stop_training_signal = False
+                        servicer.reset_complete = False
+                        servicer.lock.notify_all()
                         break
-                time.sleep(2.0)
+                else:
+                    # reset_complete is True, we can proceed
+                    servicer.global_step_counter = 0
+                    servicer.steps_since_last_change = 0
+                    servicer.stop_training_signal = False
+                    servicer.lock.notify_all()
+
             print("[Master Orchestrator] All workers have reset. Proceeding to next episode.")
- 
-            servicer.agent.target_net.load_state_dict(servicer.agent.policy_net.state_dict())
-            
+
             servicer.export_benchmark_files(output_dir=".")
 
         print("\n[Master Orchestrator] Training completed successfully!")
