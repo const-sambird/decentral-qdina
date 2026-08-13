@@ -66,6 +66,7 @@ class LocalIndexingEnv(gym.Env):
         self.best_cost = float('inf')
 
         self.index_gains = {}
+        self._cost_cache = {} 
 
     def _get_candidate_size(self, candidate) -> int:
         """
@@ -101,18 +102,23 @@ class LocalIndexingEnv(gym.Env):
             return default_size
 
     def _estimate_workload_costs(self, queries):
-        """Estimate the total cost of the current workload under the current set of active indexes.
-
-        This method clears all hypothetical indexes, creates a separate process to run
-        the CostEstimator, and returns the estimated costs per template. If the estimation
-        times out (600s), a fallback cost is returned.
+        """
+        Estimate the cost of the given queries under the current set of active indexes.
+        Uses a cache to avoid re-estimating the same (queries, active indexes, templates)
+        combination within an episode. The cache is cleared at each reset.
 
         Args:
-            queries (list[str]): The SQL queries to evaluate.
+            queries (list[str]): List of SQL queries to evaluate.
 
         Returns:
             list[float]: Estimated costs per template (length = self.n_templates).
         """
+        # Build a cache key from the queries, active indexes, and templates
+        key = (tuple(queries), tuple(self._current_indexes), tuple(self.templates))
+        if key in self._cost_cache:
+            return self._cost_cache[key]
+
+        # Clean up any existing hypothetical indexes
         tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
         if tables_to_clean:
             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
@@ -131,6 +137,8 @@ class LocalIndexingEnv(gym.Env):
             p.start()
             costs = local_queue.get(timeout=600)
             p.join()
+            # Store in cache before returning
+            self._cost_cache[key] = costs
             return costs
         except Exception as e:
             print(f"[Worker Indexing Env {self.replica_id} Warning] Échec calcul coûts (Port {self.port}) : {e}")
@@ -153,6 +161,7 @@ class LocalIndexingEnv(gym.Env):
             tuple: (observation, info) where info contains the agent mode.
         """
         super().reset(seed=seed)
+        self._cost_cache = {}
 
         self._current_indexes = np.zeros(self.n_candidates)
         self._spaces_used = 0.0
