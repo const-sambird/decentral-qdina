@@ -1,22 +1,13 @@
-def select_indexes_knapsack(indexes_with_gain_and_size, budget):
+def select_indexes_knapsack(indexes_with_gain_and_size, budget, max_visits=50000):
     """
     Selects the best set of indexes that fits within the storage budget.
-    Uses Branch and Bound to find the exact optimal solution.
-
-    Parameters:
-        indexes_with_gain_and_size: list of tuples (gain, size)
-            - gain: positive float, the cost reduction provided by this index.
-            - size: positive int, the storage space required (in bytes).
-        budget: maximum allowed total size (int).
-
-    Returns:
-        list of selected (gain, size) tuples that maximize total gain
-        without exceeding budget.
+    Uses an optimized Branch and Bound algorithm with bitmasks and early stopping
+    to prevent O(2^n) explosion during reinforcement learning loops.
     """
     if not indexes_with_gain_and_size:
         return []
 
-    # Sort items by decreasing gain/size ratio (helps the branch and bound prune faster)
+    # Sort items by decreasing gain/size ratio to maximize pruning efficiency
     items = sorted(indexes_with_gain_and_size, key=lambda x: x[0] / x[1], reverse=True)
     n = len(items)
 
@@ -24,63 +15,60 @@ def select_indexes_knapsack(indexes_with_gain_and_size, budget):
     gains = [g for g, _ in items]
     sizes = [s for _, s in items]
 
-    best_value = 0.0           # best total gain found so far
-    best_combination = [False] * n   # which items are selected in the best solution
+    best_value = 0.0
+    best_mask = 0
+    visits = 0
 
-    # --- Upper bound function (fractional knapsack) ---
     def bound(level, current_value, current_size):
         """
-        Computes the maximum possible gain we could obtain from the remaining items
-        if we were allowed to take fractions of them.
-        This is used to prune the search.
+        Computes the fractional knapsack upper bound for remaining items.
         """
         remaining = budget - current_size
         bound_value = current_value
         i = level
-        # take whole items while they fit
         while i < n and remaining >= sizes[i]:
             bound_value += gains[i]
             remaining -= sizes[i]
             i += 1
-        # take a fraction of the next item
         if i < n:
             bound_value += gains[i] * (remaining / sizes[i])
         return bound_value
 
-    # --- Depth-first search with pruning ---
-    def dfs(level, current_value, current_size, selected):
-        nonlocal best_value, best_combination
+    def dfs(level, current_value, current_size, current_mask):
+        nonlocal best_value, best_mask, visits
 
-        # If we exceed budget, stop this branch
-        if current_size > budget:
+        # 1. Hard stop to prevent the RL step from freezing on degenerate edge cases
+        visits += 1
+        if visits > max_visits:
             return
 
-        # If we processed all items, update best if improved
-        if level == n:
-            if current_value > best_value:
-                best_value = current_value
-                best_combination = selected[:]
+        # 2. Record the best configuration found so far instantly
+        if current_value > best_value:
+            best_value = current_value
+            best_mask = current_mask
+
+        # Reached the end of the items or filled the budget
+        if level == n or current_size == budget:
             return
 
-        # Prune: if even the upper bound cannot beat the current best, stop
+        # Pruning: stop exploring if the theoretical maximum cannot beat the current best
         if current_value + bound(level, current_value, current_size) <= best_value:
             return
 
-        # Option 1: skip the current item
-        dfs(level + 1, current_value, current_size, selected + [False])
+        # 3. Branch 1: Take the current item (explored FIRST to raise best_value quickly)
+        if current_size + sizes[level] <= budget:
+            dfs(level + 1, current_value + gains[level], current_size + sizes[level], current_mask | (1 << level))
 
-        # Option 2: take the current item
-        new_size = current_size + sizes[level]
-        if new_size <= budget:
-            dfs(level + 1, current_value + gains[level], new_size, selected + [True])
+        # 4. Branch 2: Skip the current item
+        dfs(level + 1, current_value, current_size, current_mask)
 
     # Start the search
-    dfs(0, 0.0, 0, [])
+    dfs(0, 0.0, 0, 0)
 
-    # Build the list of selected items
+    # Decode the bitmask back into the selected items
     selected_items = []
-    for i, taken in enumerate(best_combination):
-        if taken:
+    for i in range(n):
+        if best_mask & (1 << i):
             selected_items.append(items[i])
 
     return selected_items
