@@ -3,7 +3,6 @@ import numpy as np
 from multiprocessing import Queue, Process
 from agent.database import Replica
 from agent.cost_estimator import CostEstimator
-from concurrent.futures import ThreadPoolExecutor
 
 class LocalIndexingEnv(gym.Env):
     def __init__(self, replica_id: int, hostname: str, port: int, user: str, password: str,
@@ -294,25 +293,34 @@ class LocalIndexingEnv(gym.Env):
         # Estimate costs
         # Run current cost and knapsack cost in parallel when in 'ignore' mode with gains
         if self.budget_mode == 'ignore' and self.index_gains:
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                # Start the current cost estimation
-                future_current = executor.submit(self._estimate_workload_costs, queries)
-
-                # Start the knapsack cost estimation only if we have a valid selection
-                knapsack_indexes = self.get_knapsack_selection()
-                if knapsack_indexes:
-                    future_knapsack = executor.submit(self._estimate_cost_with_indexes, queries, knapsack_indexes)
-                else:
-                    future_knapsack = None
-
-                # Wait for both results
-                current_costs = future_current.result()
-                if future_knapsack is not None:
-                    costs_knapsack = future_knapsack.result()
-                else:
-                    costs_knapsack = [0.0] * self.n_templates
+            knapsack_indexes = self.get_knapsack_selection()
+            conn_string = f"host={self.hostname} port={self.port} dbname={self.db_name} user={self.user} password={self.password}"
+            active_indexes = [self.candidates[i] for i, v in enumerate(self._current_indexes) if v == 1]
+            # Créer deux queues pour recevoir les résultats
+            queue1 = Queue()
+            queue2 = Queue()
+            
+            # Premier processus : estimation du coût courant
+            p1 = Process(target=_run_cost_estimator,
+                        args=(queries, self.templates, active_indexes, conn_string, self.n_templates, queue1))
+            p1.start()
+            
+            # Second processus : estimation du coût knapsack (si des index sont sélectionnés)
+            p2 = None
+            if knapsack_indexes:
+                p2 = Process(target=_run_cost_estimator,
+                            args=(queries, self.templates, knapsack_indexes, conn_string, self.n_templates, queue2))
+                p2.start()
+            
+            # Récupérer les résultats (timeout 600s)
+            current_costs = queue1.get(timeout=600)
+            costs_knapsack = queue2.get(timeout=600) if p2 else [0.0] * self.n_templates
+            
+            p1.join()
+            if p2:
+                p2.join()
         else:
-            # Sequential execution for 'enforce' mode or when no gains exist
+            # Exécution séquentielle
             current_costs = self._estimate_workload_costs(queries)
             costs_knapsack = [0.0] * self.n_templates
 
@@ -551,3 +559,7 @@ class LocalIndexingEnv(gym.Env):
         costs = local_queue.get(timeout=600)
         p.join()
         return costs
+
+def _run_cost_estimator(queries, templates, indexes, conn_string, n_templates, result_queue):
+    estimator = CostEstimator(n_templates, conn_string, result_queue)
+    estimator.run(queries, templates, indexes)
