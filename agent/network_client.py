@@ -158,7 +158,6 @@ class QDinaNetworkClient:
         Returns:
             int: The chosen action index.
         """
-        import time
         if random.random() < self.epsilon:
             return random.randint(0, self.env.action_space.n - 1)
         start = time.time()
@@ -175,8 +174,6 @@ class QDinaNetworkClient:
 
         Samples a batch of transitions and updates the network weights.
         """
-        import time
-
         if len(self.local_memory) < self.batch_size:
             return
         start = time.time()
@@ -355,7 +352,6 @@ class QDinaNetworkClient:
                 dynamic_templates_map = [hash(q_text) % self.n_templates for q_text in current_queries]
                 self.env.templates = dynamic_templates_map
 
-                import time
                 step_start = time.time()
 
                 action = self._select_action(local_state)
