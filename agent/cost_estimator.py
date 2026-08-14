@@ -26,6 +26,8 @@ class CostEstimator:
         :param templates: which template each query belongs to
         :param indexes: a description of the indexes to simulate for cost estimation
         '''
+        import time
+        start_total = time.time()
         costs = [0 for _ in range(self.n_templates)]
         try:
             conn = psycopg.connect(self.connection_string)
@@ -33,6 +35,9 @@ class CostEstimator:
             print(f"CostEstimator: connection error: {e}")
             self.queue.put(costs)
             return
+
+        conn_time = time.time() - start_total
+        print(f"[TIMER CostEstimator] connection took {conn_time:.2f}s")
 
         with conn.cursor() as cur:
             indexes_required = 0
@@ -50,6 +55,8 @@ class CostEstimator:
                         conn.rollback()
 
             for idx, query in enumerate(queries):
+                q_start = time.time()
+
                 for statement in query.split(';'):
                     statement = statement.lower()
                     if 'create view' in statement or 'drop view' in statement:
@@ -76,7 +83,11 @@ class CostEstimator:
                         except Exception as e:
                             print(f"CostEstimator: EXPLAIN error: {e}")
                             conn.rollback()
+                print(f"[TIMER CostEstimator] query {idx} took {time.time() - q_start:.2f}s")
 
             conn.commit()
-        
+
+        total = time.time() - start_total
+        print(f"[TIMER CostEstimator] total run time: {total:.2f}s for {len(queries)} queries")
+
         self.queue.put(costs)

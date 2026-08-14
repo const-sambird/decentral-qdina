@@ -158,21 +158,29 @@ class QDinaNetworkClient:
         Returns:
             int: The chosen action index.
         """
+        import time
         if random.random() < self.epsilon:
             return random.randint(0, self.env.action_space.n - 1)
+        start = time.time()
         state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             q_values = self.policy_net(state_tensor)
-            return q_values.argmax().item()
+            action = q_values.argmax().item()
+        elapsed = time.time() - start
+        print(f"[TIMER Worker {self.replica_id}] _select_action forward pass took {elapsed*1000:.2f}ms")
+        return action
 
     def _optimize_local_model(self):
         """Perform one optimization step on the local DQN using the replay memory.
 
         Samples a batch of transitions and updates the network weights.
         """
+        import time
+
         if len(self.local_memory) < self.batch_size:
             return
-            
+        start = time.time()
+
         transitions = self.local_memory.sample(self.batch_size)
         states, actions, rewards, next_states, dones = zip(*transitions)
         
@@ -241,6 +249,8 @@ class QDinaNetworkClient:
                 return loss
                 
             self.optimizer.step(closure)
+        elapsed = time.time() - start
+        print(f"[TIMER Worker {self.replica_id}] _optimize_local_model took {elapsed:.3f}s")
 
     def run_training(self):
         """Main training loop for the local reinforcement learning agent.
@@ -344,7 +354,10 @@ class QDinaNetworkClient:
                 print(f"[Worker Client {self.replica_id}] Sliced workload received containing {len(current_queries)} active queries.")
                 dynamic_templates_map = [hash(q_text) % self.n_templates for q_text in current_queries]
                 self.env.templates = dynamic_templates_map
-                                
+
+                import time
+                step_start = time.time()
+
                 action = self._select_action(local_state)
                 next_state, reward, terminated, truncated, info = self.env.step(action, queries=current_queries)
 
@@ -376,9 +389,11 @@ class QDinaNetworkClient:
 
                 self.local_memory.push(local_state, action, next_state, reward, terminated)
                 local_state = next_state
-                
+
+                optim_start = time.time()
                 self._optimize_local_model()
-                
+                print(f"[TIMER Worker {self.replica_id}] optimization took {time.time() - optim_start:.3f}s")
+
                 current_cost_tracker = info.get('total_cost', 0.0)
                 current_storage_usage = info.get('storage', 0.0)
 
@@ -392,7 +407,10 @@ class QDinaNetworkClient:
                         costs_per_template = [float(c) for c in info['costs_knapsack']]
                     else:
                         costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
-                
+
+                elapsed_step = time.time() - step_start
+                print(f"[TIMER Worker {self.replica_id}] full step (action+env+memory+optim) took {elapsed_step:.2f}s")
+
                 storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
                 print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Reward {reward:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.3f}")
 

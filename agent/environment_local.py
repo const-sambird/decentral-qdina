@@ -114,6 +114,9 @@ class LocalIndexingEnv(gym.Env):
         Returns:
             list[float]: Estimated costs per template (length = self.n_templates).
         """
+        import time
+        start_total = time.time()
+
         tables_to_clean = list(set([c[0] for c in self.candidates if c and len(c) > 0]))
         if tables_to_clean:
             self.db_replica.drop_all_indexes(tables_to_clean, mode='cost')
@@ -132,8 +135,12 @@ class LocalIndexingEnv(gym.Env):
             p.start()
             costs = local_queue.get(timeout=600)
             p.join()
+            elapsed = time.time() - start_total
+            print(f"[TIMER Worker {self.replica_id}] _estimate_workload_costs: {elapsed:.2f}s for {len(queries)} queries")
             return costs
         except Exception as e:
+            elapsed = time.time() - start_total
+            print(f"[TIMER Worker {self.replica_id}] _estimate_workload_costs failed after {elapsed:.2f}s: {e}")
             print(f"[Worker Indexing Env {self.replica_id} Warning] Échec calcul coûts (Port {self.port}) : {e}")
             if p.is_alive():
                 p.terminate()
@@ -191,6 +198,9 @@ class LocalIndexingEnv(gym.Env):
         If the cost does not improve significantly for `max_stagnation_steps`, all indexes are cleared.
         Best configurations are memorized and can be restored if stagnation occurs.
         """
+        import time
+        step_start = time.time()
+
         if queries is None:
             queries = []
 
@@ -264,7 +274,10 @@ class LocalIndexingEnv(gym.Env):
         old_storage = self._spaces_used
 
         # Estimate initial costs (without the modification)
+        init_start = time.time()
         self.initial_costs = self._estimate_workload_costs(queries)
+        print(f"[TIMER Worker {self.replica_id}] initial cost estimation took {time.time() - init_start:.2f}s")
+
         initial_total = sum(self.initial_costs)
 
         # Apply the action (add or drop)
@@ -295,6 +308,7 @@ class LocalIndexingEnv(gym.Env):
         # Estimate costs
         # Run current cost and knapsack cost in parallel when in 'ignore' mode with gains
         if self.budget_mode == 'ignore' and self.index_gains:
+            t0 = time.time()
             knapsack_indexes = self.get_knapsack_selection()
             conn_string = f"host={self.hostname} port={self.port} dbname={self.db_name} user={self.user} password={self.password}"
             active_indexes = [self.candidates[i] for i, v in enumerate(self._current_indexes) if v == 1]
@@ -317,14 +331,17 @@ class LocalIndexingEnv(gym.Env):
             # Récupérer les résultats (timeout 600s)
             current_costs = queue1.get(timeout=600)
             costs_knapsack = queue2.get(timeout=600) if p2 else [0.0] * self.n_templates
-            
+            print(f"[TIMER Worker {self.replica_id}] parallel cost estimation took {time.time() - t0:.2f}s")
+
             p1.join()
             if p2:
                 p2.join()
         else:
+            t0 = time.time()
             # Exécution séquentielle
             current_costs = self._estimate_workload_costs(queries)
             costs_knapsack = [0.0] * self.n_templates
+            print(f"[TIMER Worker {self.replica_id}] sequential cost estimation took {time.time() - t0:.2f}s")
 
         current_total = sum(current_costs)
         self.last_costs = current_costs[:]
@@ -416,7 +433,7 @@ class LocalIndexingEnv(gym.Env):
 
         terminated = False
         truncated = False
-
+        print(f"[TIMER Worker {self.replica_id}] step total time: {time.time() - step_start:.2f}s")
         return self._get_obs(), reward, terminated, truncated, {
             'costs': current_costs,
             'costs_knapsack': costs_knapsack,

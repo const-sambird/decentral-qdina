@@ -4,6 +4,8 @@ def select_indexes_knapsack(indexes_with_gain_and_size, budget, max_visits=50000
     Uses an optimized Branch and Bound algorithm with bitmasks and early stopping
     to prevent O(2^n) explosion during reinforcement learning loops.
     """
+    import time
+    start_time = time.time()
     if not indexes_with_gain_and_size:
         return []
 
@@ -71,4 +73,6 @@ def select_indexes_knapsack(indexes_with_gain_and_size, budget, max_visits=50000
         if best_mask & (1 << i):
             selected_items.append(items[i])
 
+    total_time = time.time() - start_time
+    print(f"[TIMER Knapsack] total run time: {total_time:.2f}s")
     return selected_items
