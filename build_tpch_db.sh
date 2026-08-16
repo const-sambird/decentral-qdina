@@ -8,8 +8,8 @@ while getopts "s:" opt; do
             SCALE_FACTOR="${OPTARG}"
             ;;
         *)
-            echo "Usage: sudo bash setup_tpch.sh -s <SCALE_FACTOR>"
-            echo "Example: sudo bash setup_tpch.sh -s 25"
+            echo "Usage: sudo bash build_tpch_db.sh -s <SCALE_FACTOR>"
+            echo "Example: sudo bash build_tpch_db.sh -s 25"
             exit 1
             ;;
     esac
@@ -17,8 +17,8 @@ done
 
 if [ -z "${SCALE_FACTOR}" ]; then
     echo "Error: Scale factor (-s) is required."
-    echo "Usage: sudo bash setup_tpch.sh -s <SCALE_FACTOR>"
-    echo "Example: sudo bash setup_tpch.sh -s 25"
+    echo "Usage: sudo bash build_tpch_db.sh -s <SCALE_FACTOR>"
+    echo "Example: sudo bash build_tpch_db.sh -s 25"
     exit 1
 fi
 
@@ -37,7 +37,6 @@ if ! mountpoint -q /data; then
         exit 1
     fi
 
-    # Format partition 4 or initialize via CloudLab helper if absent
     if [ ! -b "${NVME_DEV}p4" ] && [ -x /usr/local/etc/emulab/mkextrafs.pl ]; then
         /usr/local/etc/emulab/mkextrafs.pl -f /data || true
     fi
@@ -51,7 +50,6 @@ if ! mountpoint -q /data; then
     fi
 fi
 
-# Hard check: Ensure at least 50GB available on /data
 AVAIL_GB=$(df -BG /data | awk 'NR==2 {print $4}' | tr -d 'G')
 if [ "$AVAIL_GB" -lt 50 ]; then
     echo "CRITICAL ERROR: /data has only ${AVAIL_GB}GB available. Target must be on the NVMe partition."
@@ -64,14 +62,21 @@ chmod 755 /data
 cd /data
 
 echo "=== [2/8] Installing PostgreSQL 17 and HypoPG ==="
-apt update -qq
-apt install -y -qq curl ca-certificates gnupg git build-essential gcc make
+# Nettoyage préventif des clés conflictuelles
+rm -f /etc/apt/sources.list.d/pgdg.list /etc/apt/sources.list.d/pgdg.sources /etc/apt/keyrings/postgresql.gpg
 
-install -d /etc/apt/keyrings
-if [ ! -f /etc/apt/keyrings/postgresql.gpg ]; then
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg
+apt update -qq
+apt install -y -qq curl ca-certificates gnupg git build-essential gcc make postgresql-common
+
+# Configuration propre via postgresql-common
+if [ -f /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh ]; then
+    /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+else
+    install -d /etc/apt/keyrings
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor --yes -o /etc/apt/keyrings/postgresql.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
 fi
-echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | tee /etc/apt/sources.list.d/pgdg.list
+
 apt update -qq
 apt install -y -qq postgresql-17 postgresql-contrib-17 postgresql-server-dev-17
 
@@ -90,7 +95,6 @@ chown -R postgres:postgres /data/postgresql /var/run/postgresql
 chmod 700 /data/postgresql/17/main
 chmod 2777 /var/run/postgresql
 
-# Reinitialize cluster on /data
 rm -rf /data/postgresql/17/main/*
 sudo -u postgres /usr/lib/postgresql/17/bin/initdb -D /data/postgresql/17/main --locale=en_US.UTF-8 --encoding=UTF8
 
@@ -105,8 +109,6 @@ sed -i '$a host    tpchdb          sam             10.10.1.0/24            trust
 sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/g" "${PG_CONF}"
 sed -i "s/listen_addresses = 'localhost'/listen_addresses = '*'/g" "${PG_CONF}"
 
-# Bulk loading optimizations
-sudo -u postgres psql -c "ALTER SYSTEM SET shared_buffers = '16GB';" 2>/dev/null || true
 systemctl restart postgresql
 
 until sudo -u postgres pg_isready -q; do
@@ -126,7 +128,6 @@ until sudo -u postgres pg_isready -q; do
     sleep 1
 done
 
-# Initialize user sam and database tpchdb
 sudo -u postgres psql -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sam') THEN CREATE USER sam SUPERUSER; ELSE ALTER USER sam SUPERUSER; END IF; END \$\$;"
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS tpchdb;"
 sudo -u postgres psql -c "CREATE DATABASE tpchdb OWNER sam ENCODING 'UTF8' LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8';"
@@ -180,7 +181,6 @@ rm -rf /data/hypopg /data/pg-tpch-dbgen
 apt clean
 rm -rf /tmp/* /var/tmp/*
 
-# Demote sam and reset configuration
 sudo -u postgres psql -c "ALTER USER sam NOSUPERUSER;"
 sudo -u postgres psql -c "ALTER SYSTEM RESET ALL;"
 systemctl restart postgresql
@@ -203,5 +203,4 @@ echo "=========================================================="
 echo " Setup complete! tpchdb is ready for SF${SCALE_FACTOR}."
 echo "=========================================================="
 
-
-chmod +x /home/roudy/setup_tpch.sh
+chmod +x build_tpch_db.sh
