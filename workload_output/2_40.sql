@@ -1,4 +1,4 @@
--- using 3951237319 as a seed to the RNG
+-- using 9130114195 as a seed to the RNG
 
 
 select
@@ -19,8 +19,8 @@ from
 where
 	p_partkey = ps_partkey
 	and s_suppkey = ps_suppkey
-	and p_size = 25
-	and p_type like '%STEEL'
+	and p_size = 50
+	and p_type like '%NICKEL'
 	and s_nationkey = n_nationkey
 	and n_regionkey = r_regionkey
 	and r_name = 'MIDDLE EAST'

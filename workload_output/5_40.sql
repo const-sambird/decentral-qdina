@@ -1,4 +1,4 @@
--- using 3951237319 as a seed to the RNG
+-- using 9130114195 as a seed to the RNG
 
 
 select

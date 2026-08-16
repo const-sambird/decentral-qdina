@@ -1,4 +1,4 @@
--- using 3951237309 as a seed to the RNG
+-- using 9130114185 as a seed to the RNG
 
 
 select
@@ -20,7 +20,7 @@ from
 	lineitem
 where
 	o_orderkey = l_orderkey
-	and l_shipmode in ('REG AIR', 'SHIP')
+	and l_shipmode in ('FOB', 'TRUCK')
 	and l_commitdate < l_receiptdate
 	and l_shipdate < l_commitdate
 	and l_receiptdate >= date '1997-01-01'

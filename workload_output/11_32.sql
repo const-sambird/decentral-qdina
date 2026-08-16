@@ -1,4 +1,4 @@
--- using 3951237311 as a seed to the RNG
+-- using 9130114187 as a seed to the RNG
 
 
 select
@@ -11,12 +11,12 @@ from
 where
 	ps_suppkey = s_suppkey
 	and s_nationkey = n_nationkey
-	and n_name = 'FRANCE'
+	and n_name = 'KENYA'
 group by
 	ps_partkey having
 		sum(ps_supplycost * ps_availqty) > (
 			select
-				sum(ps_supplycost * ps_availqty) * 0.0000100000
+				sum(ps_supplycost * ps_availqty) * 0.0000040000
 			from
 				partsupp,
 				supplier,
@@ -24,7 +24,7 @@ group by
 			where
 				ps_suppkey = s_suppkey
 				and s_nationkey = n_nationkey
-				and n_name = 'FRANCE'
+				and n_name = 'KENYA'
 		)
 order by
 	value desc;

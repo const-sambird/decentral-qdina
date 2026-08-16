@@ -1,4 +1,4 @@
--- using 3951237318 as a seed to the RNG
+-- using 9130114194 as a seed to the RNG
 
 
 select
@@ -6,7 +6,7 @@ select
 from
 	lineitem
 where
-	l_shipdate >= date '1993-01-01'
-	and l_shipdate < date '1993-01-01' + interval '1' year
-	and l_discount between 0.03 - 0.01 and 0.03 + 0.01
+	l_shipdate >= date '1994-01-01'
+	and l_shipdate < date '1994-01-01' + interval '1' year
+	and l_discount between 0.04 - 0.01 and 0.04 + 0.01
 	and l_quantity < 25;

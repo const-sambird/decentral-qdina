@@ -1,4 +1,4 @@
--- using 3951237313 as a seed to the RNG
+-- using 9130114189 as a seed to the RNG
 
 
 select
@@ -36,11 +36,11 @@ where
 				from
 					part
 				where
-					p_name like 'thistle%'
+					p_name like 'blush%'
 			)
 			and ps_availqty > agg_quantity
 	)
 	and s_nationkey = n_nationkey
-	and n_name = 'CHINA'
+	and n_name = 'UNITED KINGDOM'
 order by
 	s_name;

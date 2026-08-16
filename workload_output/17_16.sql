@@ -1,4 +1,4 @@
--- using 3951237295 as a seed to the RNG
+-- using 9130114171 as a seed to the RNG
 
 
 select
@@ -10,6 +10,6 @@ from
 where
 	p_partkey = l_partkey
 	and agg_partkey = l_partkey
-	and p_brand = 'Brand#34'
-	and p_container = 'JUMBO CAN'
+	and p_brand = 'Brand#12'
+	and p_container = 'WRAP DRUM'
 	and l_quantity < avg_quantity;

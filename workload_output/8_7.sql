@@ -1,10 +1,10 @@
--- using 3951237286 as a seed to the RNG
+-- using 9130114162 as a seed to the RNG
 
 
 select
 	o_year,
 	sum(case
-		when nation = 'UNITED STATES' then volume
+		when nation = 'CANADA' then volume
 		else 0
 	end) / sum(volume) as mkt_share
 from
@@ -32,7 +32,7 @@ from
 			and r_name = 'AMERICA'
 			and s_nationkey = n2.n_nationkey
 			and o_orderdate between date '1995-01-01' and date '1996-12-31'
-			and p_type = 'MEDIUM PLATED TIN'
+			and p_type = 'MEDIUM ANODIZED BRASS'
 	) as all_nations
 group by
 	o_year

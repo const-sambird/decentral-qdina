@@ -1,10 +1,10 @@
--- using 3951237325 as a seed to the RNG
+-- using 9130114201 as a seed to the RNG
 
 
 select
 	o_year,
 	sum(case
-		when nation = 'IRAQ' then volume
+		when nation = 'MOROCCO' then volume
 		else 0
 	end) / sum(volume) as mkt_share
 from
@@ -29,10 +29,10 @@ from
 			and o_custkey = c_custkey
 			and c_nationkey = n1.n_nationkey
 			and n1.n_regionkey = r_regionkey
-			and r_name = 'MIDDLE EAST'
+			and r_name = 'AFRICA'
 			and s_nationkey = n2.n_nationkey
 			and o_orderdate between date '1995-01-01' and date '1996-12-31'
-			and p_type = 'PROMO ANODIZED STEEL'
+			and p_type = 'ECONOMY BRUSHED TIN'
 	) as all_nations
 group by
 	o_year
