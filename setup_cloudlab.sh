@@ -2,14 +2,15 @@
 exec > >(tee -a /var/log/cloudlab_startup.log) 2>&1
 set -ex
 
-ROLE=$1           # "router" ou "worker"
-NODE_ID=${2:-1}   # Numéro de réplique (1, 2, ...)
-SF=${3:-25}       # Scale factor
-BUDGET=${4:-12500000000}
+ROLE=$1                 # "router" or "worker"
+WORKER_COUNT=${2:-2}    # Total replica count defined in CloudLab
+SF=${3:-10}             # TPC-H Scale Factor
+BUDGET=${4:-5000000000} # Storage index budget in bytes
+NODE_ID=${5:-1}         # Node replica ID (1..N for workers)
 
 export DEBIAN_FRONTEND=noninteractive
 
-# 1. Nettoyage verrous APT
+# 1. Clean up lingering APT locks from early boot
 sleep 5
 systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
 pkill -9 -f unattended-upg 2>/dev/null || true
@@ -17,7 +18,7 @@ pkill -9 -f apt-get 2>/dev/null || true
 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
 dpkg --configure -a 2>/dev/null || true
 
-# 2. Installation Python 3.12
+# 2. Add deadsnakes PPA and install Python 3.12
 apt-get update -qq
 apt-get install -y -qq software-properties-common ca-certificates dirmngr
 add-apt-repository -y ppa:deadsnakes/ppa
@@ -26,7 +27,7 @@ apt-get install -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="
     git tmux netcat-openbsd curl build-essential gcc make psmisc \
     python3.12 python3.12-venv python3.12-dev
 
-# 3. Préparation environnement virtuel
+# 3. Setup Python virtual environment
 REPO_DIR="/decentral-qdina"
 cd "$REPO_DIR"
 python3.12 -m venv venv
@@ -34,19 +35,20 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# 4. Fichier replicas-cloudlab.csv (2 répliques)
-cat << 'CSV_EOF' > "$REPO_DIR/replicas-cloudlab.csv"
-id,host,port,user,password,dbname
-1,10.10.1.11,5432,sam,,tpchdb
-2,10.10.1.12,5432,sam,,tpchdb
-CSV_EOF
+# 4. Dynamically generate replicas-cloudlab.csv based on WORKER_COUNT
+CSV_FILE="$REPO_DIR/replicas-cloudlab.csv"
+echo "id,host,port,user,password,dbname" > "$CSV_FILE"
+for idx in $(seq 1 "$WORKER_COUNT"); do
+    ip_host="10.10.1.$((10 + idx))"
+    echo "${idx},${ip_host},5432,sam,,tpchdb" >> "$CSV_FILE"
+done
 
 if [ "$ROLE" == "router" ]; then
     BENCH_DIR="/qdina-bench"
     rm -rf "$BENCH_DIR"
     git clone https://github.com/const-sambird/qdina-bench.git "$BENCH_DIR"
     chmod -R 777 "$BENCH_DIR"
-    cp "$REPO_DIR/replicas-cloudlab.csv" "$BENCH_DIR/replicas.csv"
+    cp "$CSV_FILE" "$BENCH_DIR/replicas.csv"
 
     rm -rf "$BENCH_DIR/tpc-h"
     git clone https://github.com/gregrahn/tpch-kit.git "$BENCH_DIR/tpc-h"
