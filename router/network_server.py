@@ -203,15 +203,15 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 if request.local_reset:
                     # A local reset (budget exceeded) occurred; reuse the last valid costs.
                     total_cost = self.last_valid_total_cost.get(worker_id, 0.0)
-                    costs = self.last_valid_template_costs.get(worker_id, [0.0]*self.n_templates)
-                    # --- Stocker les index knapsack pour l'export ---
-                    self.last_known_metrics[worker_id] = {
+                    costs = self.last_valid_template_costs.get(worker_id, [0.0]*self.n_templates)                    
+                    self.knapsack_metrics[worker_id] = {
                         'total_cost': total_cost,
                         'costs': costs,
                         'storage_used': request.storage_used,
-                        'indexes': list(request.active_indexes),   # ici les index knapsack
+                        'indexes': list(request.active_indexes),
                         'local_reset': True
                     }
+                    self.last_known_metrics[worker_id] = self.knapsack_metrics[worker_id].copy()
                 else:
                     total_cost = request.total_cost
                     costs = list(request.costs)
