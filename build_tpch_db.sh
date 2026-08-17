@@ -26,18 +26,18 @@ THREADS=$(nproc)
 TARGET_USER=${SUDO_USER:-$USER}
 
 echo "=== [0/8] Purging existing PostgreSQL processes and residual memory ==="
-# Stop PostgreSQL services and kill orphan server processes
-systemctl stop postgresql || true
-systemctl stop "postgresql@*" || true
-pkill -9 -u postgres || true
+systemctl stop postgresql 2>/dev/null || true
+systemctl stop "postgresql@*" 2>/dev/null || true
 
-# Clean up stale IPC shared memory blocks & semaphores owned by postgres
-for shm_id in $(ipcs -m | awk '$3=="postgres" {print $2}'); do
-    ipcrm -m "$shm_id" 2>/dev/null || true
-done
-for sem_id in $(ipcs -s | awk '$3=="postgres" {print $2}'); do
-    ipcrm -s "$sem_id" 2>/dev/null || true
-done
+if id "postgres" >/dev/null 2>&1; then
+    pkill -9 -u postgres 2>/dev/null || true
+    for shm_id in $(ipcs -m | awk '$3=="postgres" {print $2}'); do
+        ipcrm -m "$shm_id" 2>/dev/null || true
+    done
+    for sem_id in $(ipcs -s | awk '$3=="postgres" {print $2}'); do
+        ipcrm -s "$sem_id" 2>/dev/null || true
+    done
+fi
 
 echo "=== [1/8] Checking and mounting /data NVMe partition ==="
 mkdir -p /data
@@ -51,16 +51,18 @@ if ! mountpoint -q /data; then
         exit 1
     fi
 
-    if [ ! -b "${NVME_DEV}p4" ] && [ -x /usr/local/etc/emulab/mkextrafs.pl ]; then
+    if [ -x /usr/local/etc/emulab/mkextrafs.pl ]; then
         /usr/local/etc/emulab/mkextrafs.pl -f /data || true
     fi
 
-    NVME_PART="${NVME_DEV}p4"
-    if [ -b "$NVME_PART" ]; then
-        mkfs.ext4 -F "$NVME_PART"
-        echo "$NVME_PART /data ext4 defaults 0 0" >> /etc/fstab
-        systemctl daemon-reload
-        mount /data
+    if ! mountpoint -q /data; then
+        NVME_PART="${NVME_DEV}p4"
+        if [ -b "$NVME_PART" ]; then
+            mkfs.ext4 -F "$NVME_PART"
+            echo "$NVME_PART /data ext4 defaults 0 0" >> /etc/fstab
+            systemctl daemon-reload
+            mount /data
+        fi
     fi
 fi
 
@@ -100,8 +102,10 @@ make -s
 make -s install
 
 echo "=== [3/8] Configuring PostgreSQL storage and network access ==="
-systemctl stop postgresql || true
-pkill -9 -u postgres || true
+systemctl stop postgresql 2>/dev/null || true
+if id "postgres" >/dev/null 2>&1; then
+    pkill -9 -u postgres 2>/dev/null || true
+fi
 
 mkdir -p /data/postgresql/17/main /var/run/postgresql
 rm -rf /data/postgresql/17/main/* /var/lib/postgresql/17/main/* 2>/dev/null || true
@@ -109,7 +113,7 @@ chown -R postgres:postgres /data/postgresql /var/run/postgresql
 chmod 700 /data/postgresql/17/main
 chmod 2777 /var/run/postgresql
 
-# Initialize fresh cluster directly on /data
+# Initialisation du cluster propre sur /data
 sudo -u postgres /usr/lib/postgresql/17/bin/initdb -D /data/postgresql/17/main --locale=en_US.UTF-8 --encoding=UTF8
 
 PG_CONF="/etc/postgresql/17/main/postgresql.conf"
@@ -123,8 +127,6 @@ sed -i '$a host    tpchdb          sam             10.10.1.0/24            trust
 sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/g" "${PG_CONF}"
 sed -i "s/listen_addresses = 'localhost'/listen_addresses = '*'/g" "${PG_CONF}"
 
-# Performance settings for rapid loading
-sudo -u postgres psql -c "ALTER SYSTEM SET shared_buffers = '16GB';" 2>/dev/null || true
 systemctl restart postgresql
 
 until sudo -u postgres pg_isready -q; do
@@ -144,7 +146,6 @@ until sudo -u postgres pg_isready -q; do
     sleep 1
 done
 
-# Initialize sam user and clean tpchdb database
 sudo -u postgres psql -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sam') THEN CREATE USER sam SUPERUSER; ELSE ALTER USER sam SUPERUSER; END IF; END \$\$;"
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS tpchdb;"
 sudo -u postgres psql -c "CREATE DATABASE tpchdb OWNER sam ENCODING 'UTF8' LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8';"
@@ -219,5 +220,3 @@ ORDER BY pg_total_relation_size(relid) DESC;
 echo "=========================================================="
 echo " Setup complete! tpchdb is ready for SF${SCALE_FACTOR}."
 echo "=========================================================="
-
-sudo chmod +x /decentral-qdina/build_tpch_db.sh
