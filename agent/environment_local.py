@@ -8,7 +8,7 @@ class LocalIndexingEnv(gym.Env):
     def __init__(self, replica_id: int, hostname: str, port: int, user: str, password: str,
                  db_name: str, candidates: list, templates: list[int],
                  n_templates: int, budget_mode: str ,storage_budget: float,
-                 alpha: float = 10.0, beta: float = 4.0,
+                 alpha: float = 10.0, beta: float = 1.0,
                  agent_type: str = 'classical',
                  max_stagnation_steps: int = 10):
         '''
