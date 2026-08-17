@@ -151,7 +151,7 @@ class GlobalRoutingEnv(gym.Env):
         # Scale to get reward between roughly -10 and +10 (since improvement_ratio ∈ [-1, 1])
         reward = 7.0 - (makespan_raw / 100_000_000.0) * (4.0 / 3.0)
         reward -= change_penalty
-        reward = max(-10.0, min(10.0, reward))
+        reward = max(-20.0, min(10.0, reward))
 
         self._previous_makespan = current_makespan
 
