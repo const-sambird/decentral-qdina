@@ -25,6 +25,20 @@ fi
 THREADS=$(nproc)
 TARGET_USER=${SUDO_USER:-$USER}
 
+echo "=== [0/8] Purging existing PostgreSQL processes and residual memory ==="
+# Stop PostgreSQL services and kill orphan server processes
+systemctl stop postgresql || true
+systemctl stop "postgresql@*" || true
+pkill -9 -u postgres || true
+
+# Clean up stale IPC shared memory blocks & semaphores owned by postgres
+for shm_id in $(ipcs -m | awk '$3=="postgres" {print $2}'); do
+    ipcrm -m "$shm_id" 2>/dev/null || true
+done
+for sem_id in $(ipcs -s | awk '$3=="postgres" {print $2}'); do
+    ipcrm -s "$sem_id" 2>/dev/null || true
+done
+
 echo "=== [1/8] Checking and mounting /data NVMe partition ==="
 mkdir -p /data
 
@@ -62,13 +76,11 @@ chmod 755 /data
 cd /data
 
 echo "=== [2/8] Installing PostgreSQL 17 and HypoPG ==="
-# Nettoyage préventif des clés conflictuelles
 rm -f /etc/apt/sources.list.d/pgdg.list /etc/apt/sources.list.d/pgdg.sources /etc/apt/keyrings/postgresql.gpg
 
 apt update -qq
-apt install -y -qq curl ca-certificates gnupg git build-essential gcc make postgresql-common
+apt install -y -qq curl ca-certificates gnupg git build-essential gcc make postgresql-common psmisc
 
-# Configuration propre via postgresql-common
 if [ -f /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh ]; then
     /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
 else
@@ -89,13 +101,15 @@ make -s install
 
 echo "=== [3/8] Configuring PostgreSQL storage and network access ==="
 systemctl stop postgresql || true
+pkill -9 -u postgres || true
 
 mkdir -p /data/postgresql/17/main /var/run/postgresql
+rm -rf /data/postgresql/17/main/* /var/lib/postgresql/17/main/* 2>/dev/null || true
 chown -R postgres:postgres /data/postgresql /var/run/postgresql
 chmod 700 /data/postgresql/17/main
 chmod 2777 /var/run/postgresql
 
-rm -rf /data/postgresql/17/main/*
+# Initialize fresh cluster directly on /data
 sudo -u postgres /usr/lib/postgresql/17/bin/initdb -D /data/postgresql/17/main --locale=en_US.UTF-8 --encoding=UTF8
 
 PG_CONF="/etc/postgresql/17/main/postgresql.conf"
@@ -109,6 +123,8 @@ sed -i '$a host    tpchdb          sam             10.10.1.0/24            trust
 sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/g" "${PG_CONF}"
 sed -i "s/listen_addresses = 'localhost'/listen_addresses = '*'/g" "${PG_CONF}"
 
+# Performance settings for rapid loading
+sudo -u postgres psql -c "ALTER SYSTEM SET shared_buffers = '16GB';" 2>/dev/null || true
 systemctl restart postgresql
 
 until sudo -u postgres pg_isready -q; do
@@ -128,6 +144,7 @@ until sudo -u postgres pg_isready -q; do
     sleep 1
 done
 
+# Initialize sam user and clean tpchdb database
 sudo -u postgres psql -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sam') THEN CREATE USER sam SUPERUSER; ELSE ALTER USER sam SUPERUSER; END IF; END \$\$;"
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS tpchdb;"
 sudo -u postgres psql -c "CREATE DATABASE tpchdb OWNER sam ENCODING 'UTF8' LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8';"
@@ -203,4 +220,4 @@ echo "=========================================================="
 echo " Setup complete! tpchdb is ready for SF${SCALE_FACTOR}."
 echo "=========================================================="
 
-chmod +x build_tpch_db.sh
+sudo chmod +x /decentral-qdina/build_tpch_db.sh
