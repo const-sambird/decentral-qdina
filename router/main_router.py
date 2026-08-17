@@ -115,7 +115,7 @@ if __name__ == '__main__':
         
         EPS_START = 0.9
         EPS_END = 0.05
-        EPS_DECAY = 50
+        EPS_DECAY = args.episodes / 2.0  # Decay over half the total episodes
         
         for episode in range(args.episodes):
             print(f"\n--- [Master Orchestrator] Starting Global Episode {episode + 1}/{args.episodes} ---")
