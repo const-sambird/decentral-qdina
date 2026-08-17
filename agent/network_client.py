@@ -166,7 +166,7 @@ class QDinaNetworkClient:
             q_values = self.policy_net(state_tensor)
             action = q_values.argmax().item()
         elapsed = time.time() - start
-        print(f"[TIMER Worker {self.replica_id}] _select_action forward pass took {elapsed*1000:.2f}ms")
+        # print(f"[TIMER Worker {self.replica_id}] _select_action forward pass took {elapsed*1000:.2f}ms")
         return action
 
     def _optimize_local_model(self):
@@ -247,7 +247,7 @@ class QDinaNetworkClient:
                 
             self.optimizer.step(closure)
         elapsed = time.time() - start
-        print(f"[TIMER Worker {self.replica_id}] _optimize_local_model took {elapsed:.3f}s")
+        # print(f"[TIMER Worker {self.replica_id}] _optimize_local_model took {elapsed:.3f}s")
 
     def run_training(self):
         """Main training loop for the local reinforcement learning agent.
@@ -388,7 +388,7 @@ class QDinaNetworkClient:
 
                 optim_start = time.time()
                 self._optimize_local_model()
-                print(f"[TIMER Worker {self.replica_id}] optimization took {time.time() - optim_start:.3f}s")
+                # print(f"[TIMER Worker {self.replica_id}] optimization took {time.time() - optim_start:.3f}s")
 
                 current_cost_tracker = info.get('total_cost', 0.0)
                 current_storage_usage = info.get('storage', 0.0)
@@ -405,7 +405,7 @@ class QDinaNetworkClient:
                         costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
 
                 elapsed_step = time.time() - step_start
-                print(f"[TIMER Worker {self.replica_id}] full step (action+env+memory+optim) took {elapsed_step:.2f}s")
+                # print(f"[TIMER Worker {self.replica_id}] full step (action+env+memory+optim) took {elapsed_step:.2f}s")
 
                 storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
                 print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Reward {reward:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.3f}")

@@ -37,7 +37,7 @@ class CostEstimator:
             return
 
         conn_time = time.time() - start_total
-        print(f"[TIMER CostEstimator] connection took {conn_time:.2f}s")
+        # print(f"[TIMER CostEstimator] connection took {conn_time:.2f}s")
 
         with conn.cursor() as cur:
             indexes_required = 0
@@ -83,11 +83,11 @@ class CostEstimator:
                         except Exception as e:
                             print(f"CostEstimator: EXPLAIN error: {e}")
                             conn.rollback()
-                print(f"[TIMER CostEstimator] query {idx} took {time.time() - q_start:.2f}s")
+                # print(f"[TIMER CostEstimator] query {idx} took {time.time() - q_start:.2f}s")
 
             conn.commit()
 
         total = time.time() - start_total
-        print(f"[TIMER CostEstimator] total run time: {total:.2f}s for {len(queries)} queries")
+        # print(f"[TIMER CostEstimator] total run time: {total:.2f}s for {len(queries)} queries")
 
         self.queue.put(costs)

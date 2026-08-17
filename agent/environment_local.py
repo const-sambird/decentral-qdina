@@ -136,12 +136,12 @@ class LocalIndexingEnv(gym.Env):
             costs = local_queue.get(timeout=600)
             p.join()
             elapsed = time.time() - start_total
-            print(f"[TIMER Worker {self.replica_id}] _estimate_workload_costs: {elapsed:.2f}s for {len(queries)} queries")
+            # print(f"[TIMER Worker {self.replica_id}] _estimate_workload_costs: {elapsed:.2f}s for {len(queries)} queries")
             return costs
         except Exception as e:
             elapsed = time.time() - start_total
-            print(f"[TIMER Worker {self.replica_id}] _estimate_workload_costs failed after {elapsed:.2f}s: {e}")
-            print(f"[Worker Indexing Env {self.replica_id} Warning] Échec calcul coûts (Port {self.port}) : {e}")
+            # print(f"[TIMER Worker {self.replica_id}] _estimate_workload_costs failed after {elapsed:.2f}s: {e}")
+            print(f"[Worker Indexing Env {self.replica_id} Warning] Cost estimation failed or timed out: {e}. Returning fallback costs.")
             if p.is_alive():
                 p.terminate()
             return [100000.0] * self.n_templates
@@ -276,7 +276,7 @@ class LocalIndexingEnv(gym.Env):
         # Estimate initial costs (without the modification)
         init_start = time.time()
         self.initial_costs = self._estimate_workload_costs(queries)
-        print(f"[TIMER Worker {self.replica_id}] initial cost estimation took {time.time() - init_start:.2f}s")
+        # print(f"[TIMER Worker {self.replica_id}] initial cost estimation took {time.time() - init_start:.2f}s")
 
         initial_total = sum(self.initial_costs)
 
@@ -331,7 +331,7 @@ class LocalIndexingEnv(gym.Env):
             # Récupérer les résultats (timeout 600s)
             current_costs = queue1.get(timeout=600)
             costs_knapsack = queue2.get(timeout=600) if p2 else [0.0] * self.n_templates
-            print(f"[TIMER Worker {self.replica_id}] parallel cost estimation took {time.time() - t0:.2f}s")
+            # print(f"[TIMER Worker {self.replica_id}] parallel cost estimation took {time.time() - t0:.2f}s")
 
             p1.join()
             if p2:
@@ -341,7 +341,7 @@ class LocalIndexingEnv(gym.Env):
             # Exécution séquentielle
             current_costs = self._estimate_workload_costs(queries)
             costs_knapsack = [0.0] * self.n_templates
-            print(f"[TIMER Worker {self.replica_id}] sequential cost estimation took {time.time() - t0:.2f}s")
+            # print(f"[TIMER Worker {self.replica_id}] sequential cost estimation took {time.time() - t0:.2f}s")
 
         current_total = sum(current_costs)
         self.last_costs = current_costs[:]
@@ -433,7 +433,7 @@ class LocalIndexingEnv(gym.Env):
 
         terminated = False
         truncated = False
-        print(f"[TIMER Worker {self.replica_id}] step total time: {time.time() - step_start:.2f}s")
+        # print(f"[TIMER Worker {self.replica_id}] step total time: {time.time() - step_start:.2f}s")
         return self._get_obs(), reward, terminated, truncated, {
             'costs': current_costs,
             'costs_knapsack': costs_knapsack,

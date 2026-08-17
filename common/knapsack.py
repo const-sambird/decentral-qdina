@@ -74,5 +74,5 @@ def select_indexes_knapsack(indexes_with_gain_and_size, budget, max_visits=50000
             selected_items.append(items[i])
 
     total_time = time.time() - start_time
-    print(f"[TIMER Knapsack] total run time: {total_time:.2f}s")
+    # print(f"[TIMER Knapsack] total run time: {total_time:.2f}s")
     return selected_items
