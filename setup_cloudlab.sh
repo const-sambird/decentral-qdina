@@ -35,15 +35,18 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# 4. Dynamically generate replicas-cloudlab.csv based on WORKER_COUNT
-CSV_FILE="$REPO_DIR/replicas-cloudlab.csv"
-echo "id,host,port,user,password,dbname" > "$CSV_FILE"
-for idx in $(seq 1 "$WORKER_COUNT"); do
-    ip_host="10.10.1.$((10 + idx))"
-    echo "${idx},${ip_host},5432,sam,,tpchdb" >> "$CSV_FILE"
-done
-
+# ==============================================================================
+# ROUTER SETUP
+# ==============================================================================
 if [ "$ROLE" == "router" ]; then
+    # Dynamically generate replicas-cloudlab.csv only on the Router
+    CSV_FILE="$REPO_DIR/replicas-cloudlab.csv"
+    echo "id,host,port,user,password,dbname" > "$CSV_FILE"
+    for idx in $(seq 1 "$WORKER_COUNT"); do
+        ip_host="10.10.1.$((10 + idx))"
+        echo "${idx},${ip_host},5432,sam,,tpchdb" >> "$CSV_FILE"
+    done
+
     BENCH_DIR="/qdina-bench"
     rm -rf "$BENCH_DIR"
     git clone https://github.com/const-sambird/qdina-bench.git "$BENCH_DIR"
@@ -73,7 +76,12 @@ MSG
     tmux new-session -d -s qdina -c "$REPO_DIR" bash -c \
       "source venv/bin/activate && time python3 -m router.main_router --mode drift --episodes 100 --config replicas-cloudlab.csv --workload-dir ./workload_output --seed 100; exec bash"
 
+# ==============================================================================
+# WORKER SETUP
+# ==============================================================================
 elif [ "$ROLE" == "worker" ]; then
+    # Do NOT modify or recreate replicas-cloudlab.csv here; keep repository file as is
+
     if [ -f "$REPO_DIR/build_tpch_db.sh" ]; then
         chmod +x "$REPO_DIR/build_tpch_db.sh"
         bash "$REPO_DIR/build_tpch_db.sh" -s "$SF" > /var/log/tpch_build.log 2>&1
