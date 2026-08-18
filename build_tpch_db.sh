@@ -2,14 +2,19 @@
 set -euo pipefail
 
 SCALE_FACTOR=""
-while getopts "s:" opt; do
+MODE="standard"
+
+while getopts "s:m:" opt; do
     case "${opt}" in
         s)
             SCALE_FACTOR="${OPTARG}"
             ;;
+        m)
+            MODE="${OPTARG}"
+            ;;
         *)
-            echo "Usage: sudo bash build_tpch_db.sh -s <SCALE_FACTOR>"
-            echo "Example: sudo bash build_tpch_db.sh -s 25"
+            echo "Usage: sudo bash build_tpch_db.sh -s <SCALE_FACTOR> [-m <MODE>]"
+            echo "Example: sudo bash build_tpch_db.sh -s 25 -m benchmark"
             exit 1
             ;;
     esac
@@ -17,8 +22,8 @@ done
 
 if [ -z "${SCALE_FACTOR}" ]; then
     echo "Error: Scale factor (-s) is required."
-    echo "Usage: sudo bash build_tpch_db.sh -s <SCALE_FACTOR>"
-    echo "Example: sudo bash build_tpch_db.sh -s 25"
+    echo "Usage: sudo bash build_tpch_db.sh -s <SCALE_FACTOR> [-m <MODE>]"
+    echo "Example: sudo bash build_tpch_db.sh -s 25 -m benchmark"
     exit 1
 fi
 
@@ -152,48 +157,55 @@ sudo -u postgres psql -c "DROP DATABASE IF EXISTS tpchdb;"
 sudo -u postgres psql -c "CREATE DATABASE tpchdb OWNER sam ENCODING 'UTF8' LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8';"
 sudo -u postgres psql -d tpchdb -c "CREATE EXTENSION IF NOT EXISTS hypopg;"
 
-echo "=== [4/8] Compiling dbgen and generating data (Scale Factor: ${SCALE_FACTOR}) ==="
-rm -rf /data/pg-tpch-dbgen
-git clone https://github.com/joaomcosta/pg-tpch-dbgen.git /data/pg-tpch-dbgen
-cd /data/pg-tpch-dbgen/dbgen
 
-cp makefile.suite Makefile
-sed -i 's/^CC[[:space:]]*=.*/CC      = gcc/' Makefile
-sed -i 's/^DATABASE[[:space:]]*=.*/DATABASE= POSTGRESQL/' Makefile
-sed -i 's/^MACHINE[[:space:]]*=.*/MACHINE = LINUX/' Makefile
-sed -i 's/^WORKLOAD[[:space:]]*=.*/WORKLOAD = TPCH/' Makefile
-make dbgen -s
+if [ "$MODE" != "benchmark" ]; then
+    echo "=== [4/8] Compiling dbgen and generating data (Scale Factor: ${SCALE_FACTOR}) ==="
+    rm -rf /data/pg-tpch-dbgen
+    git clone https://github.com/joaomcosta/pg-tpch-dbgen.git /data/pg-tpch-dbgen
+    cd /data/pg-tpch-dbgen/dbgen
 
-for i in $(seq 1 "${THREADS}"); do
-    ./dbgen -s "${SCALE_FACTOR}" -C "${THREADS}" -S "$i" -f &
-done
-wait
+    cp makefile.suite Makefile
+    sed -i 's/^CC[[:space:]]*=.*/CC      = gcc/' Makefile
+    sed -i 's/^DATABASE[[:space:]]*=.*/DATABASE= POSTGRESQL/' Makefile
+    sed -i 's/^MACHINE[[:space:]]*=.*/MACHINE = LINUX/' Makefile
+    sed -i 's/^WORKLOAD[[:space:]]*=.*/WORKLOAD = TPCH/' Makefile
+    make dbgen -s
 
-for f in *.tbl*; do
-    sed -i 's/|$//' "$f" &
-done
-wait
-
-echo "=== [5/8] Creating schema (dss.ddl) and importing data ==="
-psql -h 127.0.0.1 -U sam -d tpchdb -f dss.ddl
-
-psql -h 127.0.0.1 -U sam -d tpchdb -c "\copy region FROM 'region.tbl' WITH (FORMAT csv, DELIMITER '|');"
-rm -f region.tbl
-psql -h 127.0.0.1 -U sam -d tpchdb -c "\copy nation FROM 'nation.tbl' WITH (FORMAT csv, DELIMITER '|');"
-rm -f nation.tbl
-
-for tbl in supplier customer part partsupp orders lineitem; do
-    for f in ${tbl}.tbl.*; do
-        psql -h 127.0.0.1 -U sam -d tpchdb -c "\copy ${tbl} FROM '$f' WITH (FORMAT csv, DELIMITER '|');"
-        rm -f "$f"
+    for i in $(seq 1 "${THREADS}"); do
+        ./dbgen -s "${SCALE_FACTOR}" -C "${THREADS}" -S "$i" -f &
     done
-done
+    wait
 
-echo "=== [6/8] Creating primary keys, foreign keys, indexes and running ANALYZE ==="
-psql -h 127.0.0.1 -U sam -d tpchdb -f ../dss/tpch-pkeys.sql
-psql -h 127.0.0.1 -U sam -d tpchdb -f ../dss/tpch-fkey.sql
-psql -h 127.0.0.1 -U sam -d tpchdb -f ../dss/tpch-index.sql
-psql -h 127.0.0.1 -U sam -d tpchdb -c "ANALYZE;"
+    for f in *.tbl*; do
+        sed -i 's/|$//' "$f" &
+    done
+    wait
+
+    echo "=== [5/8] Creating schema (dss.ddl) and importing data ==="
+    psql -h 127.0.0.1 -U sam -d tpchdb -f dss.ddl
+
+    psql -h 127.0.0.1 -U sam -d tpchdb -c "\copy region FROM 'region.tbl' WITH (FORMAT csv, DELIMITER '|');"
+    rm -f region.tbl
+    psql -h 127.0.0.1 -U sam -d tpchdb -c "\copy nation FROM 'nation.tbl' WITH (FORMAT csv, DELIMITER '|');"
+    rm -f nation.tbl
+
+    for tbl in supplier customer part partsupp orders lineitem; do
+        for f in ${tbl}.tbl.*; do
+            psql -h 127.0.0.1 -U sam -d tpchdb -c "\copy ${tbl} FROM '$f' WITH (FORMAT csv, DELIMITER '|');"
+            rm -f "$f"
+        done
+    done
+
+    echo "=== [6/8] Creating primary keys, foreign keys, indexes and running ANALYZE ==="
+    psql -h 127.0.0.1 -U sam -d tpchdb -f ../dss/tpch-pkeys.sql
+    psql -h 127.0.0.1 -U sam -d tpchdb -f ../dss/tpch-fkey.sql
+    psql -h 127.0.0.1 -U sam -d tpchdb -f ../dss/tpch-index.sql
+    psql -h 127.0.0.1 -U sam -d tpchdb -c "ANALYZE;"
+else
+    echo "=== [4/8] Benchmark Mode: Skipping dbgen compilation and data generation ==="
+    echo "=== [5/8] Benchmark Mode: Skipping schema creation and data import ==="
+    echo "=== [6/8] Benchmark Mode: Skipping constraints and index creation ==="
+fi
 
 echo "=== [7/8] Cleaning up temporary files and resetting server configuration ==="
 rm -rf /data/hypopg /data/pg-tpch-dbgen
@@ -219,5 +231,5 @@ ORDER BY pg_total_relation_size(relid) DESC;
 "
 
 echo "=========================================================="
-echo " Setup complete! tpchdb is ready for SF${SCALE_FACTOR}."
+echo " Setup complete! tpchdb is ready for SF${SCALE_FACTOR} (Mode: ${MODE})."
 echo "=========================================================="

@@ -3,12 +3,9 @@ exec > >(tee -a /var/log/cloudlab_startup.log) 2>&1
 set -ex
 
 ROLE=$1                 # "router" or "worker"
-WORKER_COUNT=${2:-2}    # Total replica count defined in CloudLab
+WORKER_COUNT=${2:-2}    # Total replica count
 SF=${3:-10}             # TPC-H Scale Factor
-BUDGET=${4:-5000000000} # Storage index budget in bytes
-NODE_ID=${5:-1}         # Node replica ID (1..N for workers)
-EPISODES=${6:-100}      # Number of training episodes
-SEED=${7:-100}          # Random seed
+NODE_ID=${4:-1}         # Node ID
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -20,7 +17,7 @@ pkill -9 -f apt-get 2>/dev/null || true
 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
 dpkg --configure -a 2>/dev/null || true
 
-# 2. Add deadsnakes PPA and install Python 3.12
+# 2. Add deadsnakes PPA and install dependencies
 apt-get update -qq
 apt-get install -y -qq software-properties-common ca-certificates dirmngr
 add-apt-repository -y ppa:deadsnakes/ppa
@@ -29,32 +26,29 @@ apt-get install -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="
     git tmux netcat-openbsd curl build-essential gcc make psmisc \
     python3.12 python3.12-venv python3.12-dev
 
-# 3. Setup Python virtual environment
-REPO_DIR="/decentral-qdina"
-cd "$REPO_DIR"
-python3.12 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-
 # ==============================================================================
-# ROUTER SETUP
+# ROUTER SETUP (BENCHMARKER)
 # ==============================================================================
 if [ "$ROLE" == "router" ]; then
-    # Dynamically generate replicas-cloudlab.csv only on the Router
-    CSV_FILE="$REPO_DIR/replicas-cloudlab.csv"
-    echo "id,host,port,user,password,dbname" > "$CSV_FILE"
-    for idx in $(seq 1 "$WORKER_COUNT"); do
-        ip_host="10.10.1.$((10 + idx))"
-        echo "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
-    done
-
     BENCH_DIR="/qdina-bench"
-    rm -rf "$BENCH_DIR"
-    git clone https://github.com/const-sambird/qdina-bench.git "$BENCH_DIR"
-    chmod -R 777 "$BENCH_DIR"
-    cp "$CSV_FILE" "$BENCH_DIR/replicas.csv"
+    mkdir -p "$BENCH_DIR"
+    
+    # On clone dans un dossier temporaire pour ne PAS écraser les fichiers .csv 
+    # générés par l'API CloudLab quelques secondes plus tôt.
+    git clone https://github.com/const-sambird/qdina-bench.git /tmp/qdina-bench
+    cp -rn /tmp/qdina-bench/* "$BENCH_DIR"/ || true
+    rm -rf /tmp/qdina-bench
 
+    cd "$BENCH_DIR"
+    python3.12 -m venv venv
+    source venv/bin/activate
+    
+    if [ -f requirements.txt ]; then
+        pip install --upgrade pip
+        pip install -r requirements.txt
+    fi
+
+    # Préparation de l'outil de génération de données TPC-H
     rm -rf "$BENCH_DIR/tpc-h"
     git clone https://github.com/gregrahn/tpch-kit.git "$BENCH_DIR/tpc-h"
     cd "$BENCH_DIR/tpc-h/dbgen"
@@ -65,34 +59,28 @@ if [ "$ROLE" == "router" ]; then
         ln -sfn "$BENCH_DIR/tpc-h/queries" "$BENCH_DIR/queries"
     fi
 
+    chmod -R 777 "$BENCH_DIR"
+
     cat << 'MSG' > /etc/profile.d/qdina_welcome.sh
 echo ""
 echo "======================================================="
-echo "  [ROUTER] CENTRAL ROUTER NODE ACTIVE"
-echo "  Command to monitor: sudo tmux attach -t qdina"
+echo "  [BENCHMARKER] CENTRAL ROUTER NODE ACTIVE"
+echo "  Ready to run benchmarks from /qdina-bench"
 echo "======================================================="
 echo ""
 MSG
 
-    cd "$REPO_DIR"
-    
-    if ! tmux has-session -t qdina 2>/dev/null; then
-        tmux new-session -d -s qdina -c "$REPO_DIR" "source venv/bin/activate && bash"
-        tmux send-keys -t qdina "source venv/bin/activate" C-m
-    fi
-    
-    echo "Starting the Central Router in the 'qdina' tmux session..."
-    tmux send-keys -t qdina "time python3 -m router.main_router --mode drift --episodes ${EPISODES} --config replicas-cloudlab.csv --workload-dir ./workload_output --seed ${SEED}" C-m
-
 # ==============================================================================
-# WORKER SETUP
+# WORKER SETUP (REPLICAS)
 # ==============================================================================
 elif [ "$ROLE" == "worker" ]; then
-    # Do NOT modify or recreate replicas-cloudlab.csv here; keep repository file as is
-
+    REPO_DIR="/decentral-qdina"
+    
+    # On lance build_tpch_db.sh avec l'argument -m benchmark pour FORCER
+    # le script à sauter la génération des données et se contenter d'installer PostgreSQL
     if [ -f "$REPO_DIR/build_tpch_db.sh" ]; then
         chmod +x "$REPO_DIR/build_tpch_db.sh"
-        bash "$REPO_DIR/build_tpch_db.sh" -s "$SF" > /var/log/tpch_build.log 2>&1
+        bash "$REPO_DIR/build_tpch_db.sh" -s "$SF" -m benchmark > /var/log/tpch_build.log 2>&1
     fi
 
     if [ -f /etc/postgresql/17/main/pg_hba.conf ]; then
@@ -108,24 +96,9 @@ elif [ "$ROLE" == "worker" ]; then
     cat << MSG > /etc/profile.d/qdina_welcome.sh
 echo ""
 echo "======================================================="
-echo "  [AGENT] WORKER NODE ${NODE_ID} ACTIVE"
-echo "  Command to monitor: sudo tmux attach -t qdina"
+echo "  [REPLICA] WORKER NODE ${NODE_ID} ACTIVE"
+echo "  Database is installed and waiting for benchmarking data."
 echo "======================================================="
 echo ""
 MSG
-
-    echo "Waiting for Central Router at 10.10.1.1:50051..."
-    while ! nc -z 10.10.1.1 50051; do
-        sleep 2
-    done
-
-    cd "$REPO_DIR"
-    
-    if ! tmux has-session -t qdina 2>/dev/null; then
-        tmux new-session -d -s qdina -c "$REPO_DIR" "source venv/bin/activate && bash"
-        tmux send-keys -t qdina "source venv/bin/activate" C-m
-    fi
-    
-    echo "Starting Agent Node ${NODE_ID} connecting to Router at 10.10.1.1:50051..."
-    tmux send-keys -t qdina "python3 -m agent.main_agent --id ${NODE_ID} --mode classical --server 10.10.1.1:50051 --config replicas-cloudlab.csv --budget-mode ignore --storage-budget ${BUDGET}" C-m
 fi
