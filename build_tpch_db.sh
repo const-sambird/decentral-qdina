@@ -107,6 +107,10 @@ git checkout 1.4.1 -q
 make -s
 make -s install
 
+apt-get update -qq && apt-get install -y -qq locales
+locale-gen en_US.UTF-8
+update-locale LANG=en_US.UTF-8
+
 echo "=== [3/8] Configuring PostgreSQL storage and network access ==="
 systemctl stop postgresql 2>/dev/null || true
 if id "postgres" >/dev/null 2>&1; then
