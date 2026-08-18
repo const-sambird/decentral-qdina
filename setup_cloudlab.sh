@@ -44,7 +44,7 @@ if [ "$ROLE" == "router" ]; then
     echo "id,host,port,user,password,dbname" > "$CSV_FILE"
     for idx in $(seq 1 "$WORKER_COUNT"); do
         ip_host="10.10.1.$((10 + idx))"
-        echo "${idx},${ip_host},5432,sam,,tpchdb" >> "$CSV_FILE"
+        echo "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
     done
 
     BENCH_DIR="/qdina-bench"
