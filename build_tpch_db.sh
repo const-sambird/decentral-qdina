@@ -39,38 +39,39 @@ if id "postgres" >/dev/null 2>&1; then
     done
 fi
 
-echo "=== [1/8] Checking and mounting /data NVMe partition ==="
+echo "=== [1/8] Checking and mounting /data partition ==="
 mkdir -p /data
 
 if ! mountpoint -q /data; then
     sed -i '/\/data/d' /etc/fstab
-    NVME_DEV=$(lsblk -dpno NAME | grep nvme | head -n 1)
-
-    if [ -z "$NVME_DEV" ]; then
-        echo "Error: No NVMe device detected."
-        exit 1
-    fi
-
+    
+    # 1. Utilisation prioritaire de l'outil CloudLab pour monter n'importe quel disque additionnel
     if [ -x /usr/local/etc/emulab/mkextrafs.pl ]; then
         /usr/local/etc/emulab/mkextrafs.pl -f /data || true
     fi
 
+    # 2. Si mkextrafs n'a pas suffi, on cherche un NVMe (Spécifique à certains clusters comme Utah)
     if ! mountpoint -q /data; then
-        NVME_PART="${NVME_DEV}p4"
-        if [ -b "$NVME_PART" ]; then
-            mkfs.ext4 -F "$NVME_PART"
-            echo "$NVME_PART /data ext4 defaults 0 0" >> /etc/fstab
-            systemctl daemon-reload
-            mount /data
+        # Le '|| true' empêche le script de crasher si grep ne trouve rien
+        NVME_DEV=$(lsblk -dpno NAME | grep nvme | head -n 1 || true)
+
+        if [ -n "$NVME_DEV" ]; then
+            NVME_PART="${NVME_DEV}p4"
+            if [ -b "$NVME_PART" ]; then
+                mkfs.ext4 -F "$NVME_PART"
+                echo "$NVME_PART /data ext4 defaults 0 0" >> /etc/fstab
+                systemctl daemon-reload
+                mount /data
+            fi
+        else
+            echo "Warning: No NVMe device detected. Falling back to default root storage."
         fi
     fi
 fi
 
 AVAIL_GB=$(df -BG /data | awk 'NR==2 {print $4}' | tr -d 'G')
 if [ "$AVAIL_GB" -lt 50 ]; then
-    echo "CRITICAL ERROR: /data has only ${AVAIL_GB}GB available. Target must be on the NVMe partition."
-    df -h /data
-    exit 1
+    echo "Warning: /data has only ${AVAIL_GB}GB available. Generating a large Scale Factor might fail."
 fi
 
 chown -R "${TARGET_USER}:" /data
