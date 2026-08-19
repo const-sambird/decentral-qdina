@@ -28,6 +28,7 @@ class GlobalRoutingEnv(gym.Env):
 
         self._state_cost_matrix = np.zeros((self.n_templates, self.n_replicas), dtype=np.float64)
         self._previous_makespan = None  # For reward shaping
+        self._max_makespan = None
 
     def _decode_action(self, action: int):
         '''
@@ -141,18 +142,19 @@ class GlobalRoutingEnv(gym.Env):
         else:
             jain_index = 1.0
 
+        if self._max_makespan is None:
+            self._max_makespan = makespan_raw if makespan_raw > 0 else 1.0
+            reward = 1.0
+        else:
+            if makespan_raw > self._max_makespan:
+                self._max_makespan = makespan_raw
+            improvement = (self._max_makespan - makespan_raw) / self._max_makespan
+            reward = 10.0 * improvement
+
         num_changes = np.sum(old_routes != self._state_routes)
+        reward -= 0.1 * num_changes
 
-        change_penalty = 0.1 * num_changes
-
-        # Reward based on relative makespan improvement
         current_makespan = float(np.max(costs))
-
-        # Scale to get reward between roughly -10 and +10 (since improvement_ratio ∈ [-1, 1])
-        reward = 7.0 - (makespan_raw / 100_000_000.0) * (4.0 / 3.0)
-        reward -= change_penalty
-        reward = max(-30.0, min(10.0, reward))
-
         self._previous_makespan = current_makespan
 
         # Additional penalty if any replica has zero cost (inactive)
