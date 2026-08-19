@@ -181,11 +181,7 @@ if [ "$MODE" != "benchmark" ]; then
     wait
 
     for f in *.tbl*; do
-        # Supprime les espaces superflus en fin de ligne et s'assure du format de fin de ligne standard
-        sed -i 's/\r//g' "$f"
-        # S'assure que chaque ligne se termine bien par un unique délimiteur '|' si attendu par le format
-        # ou nettoie les pipes traînantes incorrects
-        sed -i 's/|[[:space:]]*$/|/' "$f" &
+        sed -i 's/\r//g; s/|[[:space:]]*$//' "$f" &
     done
     wait
 
