@@ -180,8 +180,32 @@ if [ "$MODE" != "benchmark" ]; then
     done
     wait
 
+    echo "=== [4.5/8] Cleaning trailing delimiters in-place without disk duplication ==="
     for f in *.tbl*; do
-        sed -i 's/\r//g; s/|[[:space:]]*$//' "$f" &
+        python3 -c '
+import sys
+filename = sys.argv[1]
+with open(filename, "r+b") as f:
+    read_pos = 0
+    write_pos = 0
+    while True:
+        f.seek(read_pos)
+        line = f.readline()
+        if not line:
+            break
+        read_pos = f.tell()
+        
+        line = line.rstrip(b"\r\n")
+        if line.endswith(b"|"):
+            line = line[:-1]
+        line = line + b"\n"
+        
+        f.seek(write_pos)
+        f.write(line)
+        write_pos = f.tell()
+        
+    f.truncate(write_pos)
+' "$f" &
     done
     wait
 
