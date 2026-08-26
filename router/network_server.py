@@ -152,20 +152,20 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     self.registered_workers[worker_id]['last_seen'] = time.time()
 
                 if self.stop_training_signal:
-                    # Si le reset est déjà complet, on ne fait que renvoyer stop_training=True
+                    # If reset is already complete, only return stop_training=True
                     if self.reset_complete:
                         return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
 
-                    # Traitement des acquittements
+                    # Handling acknowledgments
                     if request.local_reset:
-                        # ... (récupération des métriques comme avant)
+                        # retrieve metrics as before
                         self.episode_reset_acks.add(worker_id)
                         print(f"[Server] Worker {worker_id} acknowledged episode reset. "
                             f"({len(self.episode_reset_acks)}/{len(self.registered_workers)})")
                     else:
                         return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
 
-                    # Vérifier si tous les workers ont acquitté
+                    # Check if all workers have acknowledged
                     if len(self.episode_reset_acks) >= len(self.registered_workers):
                         print("[Server] All workers acknowledged reset. Waiting for main loop to start next episode.")
                         self.reset_complete = True
@@ -196,7 +196,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                             param_layers=self.param_layers
                         )
                     else:
-                        # Pas encore tous acquittés
+                        # Not all workers have acknowledged yet
                         return qdina_pb2.WorkloadSlice(stop_training=True, queries=[], epsilon=self.epsilon, param_layers=self.param_layers)
                 
                 # Store the metrics that this worker sent for the current step.

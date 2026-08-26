@@ -312,23 +312,23 @@ class LocalIndexingEnv(gym.Env):
             knapsack_indexes = self.get_knapsack_selection()
             conn_string = f"host={self.hostname} port={self.port} dbname={self.db_name} user={self.user} password={self.password}"
             active_indexes = [self.candidates[i] for i, v in enumerate(self._current_indexes) if v == 1]
-            # Créer deux queues pour recevoir les résultats
+            # Create two queues to receive the results
             queue1 = Queue()
             queue2 = Queue()
             
-            # Premier processus : estimation du coût courant
+            # First process: current cost estimation
             p1 = Process(target=_run_cost_estimator,
                         args=(queries, self.templates, active_indexes, conn_string, self.n_templates, queue1))
             p1.start()
             
-            # Second processus : estimation du coût knapsack (si des index sont sélectionnés)
+            # Second process: knapsack cost estimation (if indexes are selected)
             p2 = None
             if knapsack_indexes:
                 p2 = Process(target=_run_cost_estimator,
                             args=(queries, self.templates, knapsack_indexes, conn_string, self.n_templates, queue2))
                 p2.start()
             
-            # Récupérer les résultats (timeout 600s)
+            # Retrieve the results (timeout 600s)
             current_costs = queue1.get(timeout=600)
             costs_knapsack = queue2.get(timeout=600) if p2 else [0.0] * self.n_templates
             # print(f"[TIMER Worker {self.replica_id}] parallel cost estimation took {time.time() - t0:.2f}s")
@@ -338,7 +338,7 @@ class LocalIndexingEnv(gym.Env):
                 p2.join()
         else:
             t0 = time.time()
-            # Exécution séquentielle
+            # Sequential execution
             current_costs = self._estimate_workload_costs(queries)
             costs_knapsack = [0.0] * self.n_templates
             # print(f"[TIMER Worker {self.replica_id}] sequential cost estimation took {time.time() - t0:.2f}s")
