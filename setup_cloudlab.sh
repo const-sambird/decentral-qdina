@@ -52,13 +52,13 @@ if [ "$ROLE" == "router" ]; then
         fi
     done
     
-    sed -i '/^$/d' /qdina-bench/replicas.csv
-    
     BENCH_DIR="/qdina-bench"
     rm -rf "$BENCH_DIR"
     git clone https://github.com/const-sambird/qdina-bench.git "$BENCH_DIR"
     chmod -R 777 "$BENCH_DIR"
     cp "$CSV_FILE" "$BENCH_DIR/replicas.csv"
+
+    sed -i '/^$/d' $BENCH_DIR/replicas.csv
 
     rm -rf "$BENCH_DIR/tpc-h"
     git clone https://github.com/gregrahn/tpch-kit.git "$BENCH_DIR/tpc-h"
