@@ -41,12 +41,15 @@ pip install -r requirements.txt
 # ROUTER SETUP
 # ==============================================================================
 if [ "$ROLE" == "router" ]; then
-    # Dynamically generate replicas-cloudlab.csv only on the Router
     CSV_FILE="$REPO_DIR/replicas-cloudlab.csv"
     echo "id,host,port,user,password,dbname" > "$CSV_FILE"
     for idx in $(seq 1 "$WORKER_COUNT"); do
         ip_host="10.10.1.$((10 + idx))"
-        echo "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
+        if [ "$idx" -eq "$WORKER_COUNT" ]; then
+            echo -n "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
+        else
+            echo "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
+        fi
     done
 
     BENCH_DIR="/qdina-bench"
