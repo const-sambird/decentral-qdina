@@ -33,8 +33,7 @@ if [ "$ROLE" == "router" ]; then
     BENCH_DIR="/qdina-bench"
     mkdir -p "$BENCH_DIR"
     
-    # On clone dans un dossier temporaire pour ne PAS écraser les fichiers .csv 
-    # générés par l'API CloudLab quelques secondes plus tôt.
+    # Clone repository into temporary directory
     git clone https://github.com/const-sambird/qdina-bench.git /tmp/qdina-bench
     cp -rn /tmp/qdina-bench/* "$BENCH_DIR"/ || true
     rm -rf /tmp/qdina-bench
@@ -48,7 +47,7 @@ if [ "$ROLE" == "router" ]; then
         pip install -r requirements.txt
     fi
 
-    # Préparation de l'outil de génération de données TPC-H
+    # Prepare TPC-H data generation tool
     rm -rf "$BENCH_DIR/tpc-h"
     git clone https://github.com/gregrahn/tpch-kit.git "$BENCH_DIR/tpc-h"
     cd "$BENCH_DIR/tpc-h/dbgen"
@@ -61,11 +60,29 @@ if [ "$ROLE" == "router" ]; then
 
     chmod -R 777 "$BENCH_DIR"
 
-    cat << 'MSG' > /etc/profile.d/qdina_welcome.sh
+    # Clone decentral-qdina repository to get workload_output
+    REPO_DIR="/decentral-qdina"
+    rm -rf "$REPO_DIR"
+    git clone https://github.com/const-sambird/decentral-qdina.git "$REPO_DIR"
+    
+    cd "$BENCH_DIR"
+    
+    # Setup tmux session
+    SESSION_NAME="din-bench"
+    if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        tmux new-session -d -s "$SESSION_NAME" -c "$BENCH_DIR" "source venv/bin/activate && bash"
+        tmux send-keys -t "$SESSION_NAME" "source venv/bin/activate" C-m
+    fi
+    
+    echo "Starting benchmark in the '$SESSION_NAME' tmux session..."
+    tmux send-keys -t "$SESSION_NAME" "time python run.py -s $SF -v -c --copy-source $REPO_DIR/workload_output/ -x h all" C-m
+
+    cat << 'MSG' > /etc/profile.d/dina_bench_welcome.sh
 echo ""
 echo "======================================================="
 echo "  [BENCHMARKER] CENTRAL ROUTER NODE ACTIVE"
-echo "  Ready to run benchmarks from /qdina-bench"
+echo "  Benchmark directory: /qdina-bench"
+echo "  Command to monitor: sudo tmux attach -t din-bench"
 echo "======================================================="
 echo ""
 MSG
@@ -76,13 +93,18 @@ MSG
 elif [ "$ROLE" == "worker" ]; then
     REPO_DIR="/decentral-qdina"
     
-    # On lance build_tpch_db.sh avec l'argument -m benchmark pour FORCER
-    # le script à sauter la génération des données et se contenter d'installer PostgreSQL
+    # Clone the repository if not already present
+    if [ ! -d "$REPO_DIR" ]; then
+        git clone https://github.com/const-sambird/decentral-qdina.git "$REPO_DIR"
+    fi
+    
+    # Run build_tpch_db.sh with benchmark mode to skip data generation
     if [ -f "$REPO_DIR/build_tpch_db.sh" ]; then
         chmod +x "$REPO_DIR/build_tpch_db.sh"
         bash "$REPO_DIR/build_tpch_db.sh" -s "$SF" -m benchmark > /var/log/tpch_build.log 2>&1
     fi
 
+    # Configure PostgreSQL for network access
     if [ -f /etc/postgresql/17/main/pg_hba.conf ]; then
         sed -i '/host.*sam.*127\.0\.0\.1/d' /etc/postgresql/17/main/pg_hba.conf
         sed -i '/host.*tpchdb.*sam.*10\.10\.1\.0/d' /etc/postgresql/17/main/pg_hba.conf
@@ -93,7 +115,7 @@ elif [ "$ROLE" == "worker" ]; then
         systemctl restart postgresql
     fi
 
-    cat << MSG > /etc/profile.d/qdina_welcome.sh
+    cat << MSG > /etc/profile.d/dina_bench_welcome.sh
 echo ""
 echo "======================================================="
 echo "  [REPLICA] WORKER NODE ${NODE_ID} ACTIVE"
