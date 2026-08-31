@@ -45,20 +45,16 @@ if [ "$ROLE" == "router" ]; then
     echo "id,host,port,user,password,dbname" > "$CSV_FILE"
     for idx in $(seq 1 "$WORKER_COUNT"); do
         ip_host="10.10.1.$((10 + idx))"
-        if [ "$idx" -eq "$WORKER_COUNT" ]; then
-            printf "%s" "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
-        else
-            printf "%s\n" "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
-        fi
+        echo "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
     done
-    
+
+    python3 -c "f = '$CSV_FILE'; data = open(f).read(); open(f, 'w').write(data.rstrip('\n'))"    
+
     BENCH_DIR="/qdina-bench"
     rm -rf "$BENCH_DIR"
     git clone https://github.com/const-sambird/qdina-bench.git "$BENCH_DIR"
     chmod -R 777 "$BENCH_DIR"
     cp "$CSV_FILE" "$BENCH_DIR/replicas.csv"
-
-    sed -i '/^$/d' $BENCH_DIR/replicas.csv
 
     rm -rf "$BENCH_DIR/tpc-h"
     git clone https://github.com/gregrahn/tpch-kit.git "$BENCH_DIR/tpc-h"
