@@ -75,7 +75,7 @@ if [ "$ROLE" == "router" ]; then
     fi
     
     echo "Starting benchmark in the '$SESSION_NAME' tmux session..."
-    tmux send-keys -t "$SESSION_NAME" "time python run.py -s $SF -v -c --copy-source $REPO_DIR/workload_output/ -x h all" C-m
+    tmux send-keys -t "$SESSION_NAME" "time python run.py -s $SF -v -c --copy-source $REPO_DIR/workload_output/ -x h all 2>&1 | tee benchmark.log" C-m
 
     cat << 'MSG' > /etc/profile.d/dina_bench_welcome.sh
 echo ""
