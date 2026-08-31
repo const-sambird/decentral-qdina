@@ -51,7 +51,9 @@ if [ "$ROLE" == "router" ]; then
             printf "%s\n" "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
         fi
     done
-
+    
+    sed -i '/^$/d' /qdina-bench/replicas.csv
+    
     BENCH_DIR="/qdina-bench"
     rm -rf "$BENCH_DIR"
     git clone https://github.com/const-sambird/qdina-bench.git "$BENCH_DIR"
