@@ -46,9 +46,9 @@ if [ "$ROLE" == "router" ]; then
     for idx in $(seq 1 "$WORKER_COUNT"); do
         ip_host="10.10.1.$((10 + idx))"
         if [ "$idx" -eq "$WORKER_COUNT" ]; then
-            echo -n "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
+            printf "%s" "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
         else
-            echo "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
+            printf "%s\n" "${idx},${ip_host},5432,sam,tpchdb,," >> "$CSV_FILE"
         fi
     done
 
