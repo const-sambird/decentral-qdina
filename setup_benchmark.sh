@@ -53,6 +53,12 @@ if [ "$ROLE" == "router" ]; then
     chmod 777 /data
 
     mkdir -p /data/qdina-bench
+    
+    if [ -d /qdina-bench ] && [ ! -L /qdina-bench ]; then
+        cp -r /qdina-bench/* /data/qdina-bench/ 2>/dev/null || true
+        rm -rf /qdina-bench
+    fi
+    
     ln -sfn /data/qdina-bench /qdina-bench
     BENCH_DIR="/qdina-bench"
     
