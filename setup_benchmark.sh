@@ -31,15 +31,22 @@ apt-get install -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="
 # ==============================================================================
 if [ "$ROLE" == "router" ]; then
     mkdir -p /data
+    
     if ! mountpoint -q /data; then
-        NVME_DEV=$(lsblk -dpno NAME | grep nvme | head -n 1 || true)
-        if [ -n "$NVME_DEV" ]; then
-            NVME_PART="${NVME_DEV}p4"
-            if [ -b "$NVME_PART" ]; then
-                mkfs.ext4 -F "$NVME_PART"
-                echo "$NVME_PART /data ext4 defaults 0 0" >> /etc/fstab
-                systemctl daemon-reload
-                mount /data
+        if [ -x /usr/local/etc/emulab/mkextrafs.pl ]; then
+            /usr/local/etc/emulab/mkextrafs.pl -f /data || true
+        fi
+
+        if ! mountpoint -q /data; then
+            NVME_DEV=$(lsblk -dpno NAME | grep nvme | head -n 1 || true)
+            if [ -n "$NVME_DEV" ]; then
+                NVME_PART="${NVME_DEV}p4"
+                if [ -b "$NVME_PART" ]; then
+                    mkfs.ext4 -F "$NVME_PART"
+                    echo "$NVME_PART /data ext4 defaults 0 0" >> /etc/fstab
+                    systemctl daemon-reload
+                    mount /data
+                fi
             fi
         fi
     fi
