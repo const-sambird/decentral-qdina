@@ -9,6 +9,9 @@ NODE_ID=${4:-1}         # Node ID
 
 export DEBIAN_FRONTEND=noninteractive
 
+# Force APT to use IPv4 globally to prevent IPv6 routing timeouts
+echo 'Acquire::ForceIPv4 "true";' | tee /etc/apt/apt.conf.d/99force-ipv4
+
 # 1. Clean up lingering APT locks from early boot
 sleep 5
 systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
@@ -18,12 +21,12 @@ rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /va
 dpkg --configure -a 2>/dev/null || true
 
 # 2. Add deadsnakes PPA and install dependencies
-sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list
-apt-get -o Acquire::ForceIPv4=true update -qq
-apt-get -o Acquire::ForceIPv4=true install -y -qq software-properties-common ca-certificates dirmngr
+sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list[cite: 3]
+apt-get update -qq
+apt-get install -y -qq software-properties-common ca-certificates dirmngr
 add-apt-repository -y ppa:deadsnakes/ppa
-apt-get -o Acquire::ForceIPv4=true update -qq
-apt-get -o Acquire::ForceIPv4=true install -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+apt-get update -qq
+apt-get install -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     git tmux netcat-openbsd curl build-essential gcc make psmisc \
     python3.12 python3.12-venv python3.12-dev
 
