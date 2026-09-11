@@ -21,7 +21,7 @@ rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /va
 dpkg --configure -a 2>/dev/null || true
 
 # 2. Add deadsnakes PPA and install dependencies
-sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list[cite: 3]
+sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list
 apt-get update -qq
 apt-get install -y -qq software-properties-common ca-certificates dirmngr
 add-apt-repository -y ppa:deadsnakes/ppa
