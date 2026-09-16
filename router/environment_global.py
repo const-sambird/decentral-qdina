@@ -146,10 +146,10 @@ class GlobalRoutingEnv(gym.Env):
             self._max_makespan = makespan_raw if makespan_raw > 0 else 1.0
             reward = 1.0
         else:
-            if makespan_raw > self._max_makespan:
-                self._max_makespan = makespan_raw
             improvement = (self._max_makespan - makespan_raw) / self._max_makespan
             reward = 10.0 * improvement
+            if makespan_raw > self._max_makespan:
+                self._max_makespan = makespan_raw
 
         num_changes = np.sum(old_routes != self._state_routes)
         reward -= 0.1 * num_changes
