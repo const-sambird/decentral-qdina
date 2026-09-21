@@ -87,6 +87,7 @@ class GlobalRoutingEnv(gym.Env):
         self._state_worker_loads = np.zeros(self.n_replicas, dtype=np.int32)
         self._state_cost_matrix.fill(0.0)
         self._previous_makespan = None
+        self._max_makespan = None
         return self._get_obs(), {}
 
     def step(self, action: int, external_costs=None, external_template_costs=None, worker_loads=None):

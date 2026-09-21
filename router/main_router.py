@@ -45,6 +45,12 @@ if __name__ == '__main__':
     parser.add_argument('--metrics', type=str, default='metrics.csv', help='Output CSV file for metrics')
     parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
     parser.add_argument('--param-layers', type=int, default=10, help='Number of ansatz repetitions (for quantum workers)')
+    parser.add_argument('--router-mode', type=str, default='learned',
+                        choices=['learned', 'static', 'heuristic'],
+                        help="Routing strategy to use: "
+                            "'learned' (DQN, default), "
+                            "'static' (no routing changes), "
+                            "'heuristic' (DiversityClusterDB heuristic).")
 
     args = parser.parse_args()
     
@@ -80,7 +86,8 @@ if __name__ == '__main__':
         metrics_file = f"{base}_seed_{args.seed}{ext}"
 
     servicer = QDinaServerServicer(n_replicas=num_replicas, n_templates=22, batch_size=64,
-                                metrics_file=metrics_file, param_layers=args.param_layers, steps_per_episode=steps_per_episode)
+                                   metrics_file=metrics_file, param_layers=args.param_layers, 
+                                   steps_per_episode=steps_per_episode, router_mode=args.router_mode)
 
     servicer.execution_mode = args.mode
     servicer.current_workload_pool = initial_queries

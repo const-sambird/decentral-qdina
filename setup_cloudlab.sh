@@ -2,13 +2,14 @@
 exec > >(tee -a /var/log/cloudlab_startup.log) 2>&1
 set -ex
 
-ROLE=$1                 # "router" or "worker"
-WORKER_COUNT=${2:-2}    # Total replica count defined in CloudLab
-SF=${3:-10}             # TPC-H Scale Factor
-BUDGET=${4:-5000000000} # Storage index budget in bytes
-NODE_ID=${5:-1}         # Node replica ID (1..N for workers)
-EPISODES=${6:-100}      # Number of training episodes
-SEED=${7:-100}          # Random seed
+ROLE=$1                    # "router" or "worker"
+WORKER_COUNT=${2:-2}       # Total replica count defined in CloudLab
+SF=${3:-10}                # TPC-H Scale Factor
+BUDGET=${4:-5000000000}    # Storage index budget in bytes
+NODE_ID=${5:-1}            # Node replica ID (1..N for workers)
+EPISODES=${6:-100}         # Number of training episodes
+SEED=${7:-100}             # Random seed
+ROUTER_MODE=${8:-learned}  # Routing strategy: learned | static | heuristic
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -78,14 +79,14 @@ echo ""
 MSG
 
     cd "$REPO_DIR"
-    
+
     if ! tmux has-session -t qdina 2>/dev/null; then
         tmux new-session -d -s qdina -c "$REPO_DIR" "source venv/bin/activate && bash"
         tmux send-keys -t qdina "source venv/bin/activate" C-m
     fi
-    
-    echo "Starting the Central Router in the 'qdina' tmux session..."
-    tmux send-keys -t qdina "time python3 -m router.main_router --mode drift --episodes ${EPISODES} --config replicas-cloudlab.csv --workload-dir ./workload_output --seed ${SEED}" C-m
+
+    echo "Starting the Central Router in the 'qdina' tmux session (router_mode=${ROUTER_MODE})..."
+    tmux send-keys -t qdina "time python3 -m router.main_router --mode drift --episodes ${EPISODES} --config replicas-cloudlab.csv --workload-dir ./workload_output --seed ${SEED} --router-mode ${ROUTER_MODE}" C-m
 
 # ==============================================================================
 # WORKER SETUP
@@ -121,12 +122,12 @@ MSG
     done
 
     cd "$REPO_DIR"
-    
+
     if ! tmux has-session -t qdina 2>/dev/null; then
         tmux new-session -d -s qdina -c "$REPO_DIR" "source venv/bin/activate && bash"
         tmux send-keys -t qdina "source venv/bin/activate" C-m
     fi
-    
+
     echo "Starting Agent Node ${NODE_ID} connecting to Router at 10.10.1.1:50051..."
     tmux send-keys -t qdina "python3 -m agent.main_agent --id ${NODE_ID} --mode classical --server 10.10.1.1:50051 --config replicas-cloudlab.csv --budget-mode ignore --storage-budget ${BUDGET}" C-m
 fi

@@ -9,21 +9,44 @@ import os
 from protos import qdina_pb2
 from protos import qdina_pb2_grpc
 
+from router.static_router_agent import StaticRouterAgent
+from router.heuristic_router_agent import HeuristicRouterAgent
 from router.environment_global import GlobalRoutingEnv
 from router.router_agent import RouterAgent
 from common.replay_memory import ReplayMemory
 
 class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
-    def __init__(self, n_replicas, n_templates=22, batch_size=16, metrics_file=None, param_layers=10, steps_per_episode=5):
+    def __init__(self, n_replicas, n_templates=22, batch_size=16, metrics_file=None, param_layers=10, steps_per_episode=5, router_mode='learned'):
         '''
         gRPC Server Servicer coordinating decentralized worker nodes.
         '''
         self.n_templates = n_templates
         self.n_replicas = n_replicas
         self.steps_per_episode = steps_per_episode
+        self.router_mode = router_mode
 
         self.env = GlobalRoutingEnv(n_templates=n_templates, n_replicas=n_replicas)
-        self.agent = RouterAgent(n_templates=n_templates, n_replicas=n_replicas, n_actions=self.env.n_actions)
+
+        if router_mode == 'learned':
+            self.agent = RouterAgent(
+                n_templates=n_templates,
+                n_replicas=n_replicas,
+                n_actions=self.env.n_actions,
+            )
+        elif router_mode == 'static':
+            self.agent = StaticRouterAgent(
+                n_templates=n_templates,
+                n_replicas=n_replicas,
+                n_actions=self.env.n_actions,
+            )
+        elif router_mode == 'heuristic':
+            self.agent = HeuristicRouterAgent(
+                n_templates=n_templates,
+                n_replicas=n_replicas,
+                n_actions=self.env.n_actions,
+            )
+        else:
+            raise ValueError(f"Unknown router mode: {router_mode}")
 
         self.registered_workers = {}
         self.collected_metrics = {}
