@@ -24,15 +24,15 @@ pkill -9 -f apt-get 2>/dev/null || true
 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
 dpkg --configure -a 2>/dev/null || true
 
-# 2. Add deadsnakes PPA manually to bypass Launchpad API HTTP 500 errors
+# 2. Add deadsnakes PPA and install Python 3.12 (robust direct-key download)
 sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list
 apt-get update -qq
-apt-get install -y -qq software-properties-common ca-certificates dirmngr gnupg
+apt-get install -y -qq software-properties-common ca-certificates dirmngr gnupg curl
 
-# Add the deadsnakes PPA key and repository manually
+# Download the key and save it in a keyring for apt to use
 mkdir -p /etc/apt/keyrings
-gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys BA6932366A755776 || true
-gpg --export BA6932366A755776 > /etc/apt/keyrings/deadsnakes.gpg 2>/dev/null || true
+curl -fsSL https://keyserver.ubuntu.com/pks/lookup?op=get\&search=0xBA6932366A755776 | gpg --dearmor -o /etc/apt/keyrings/deadsnakes.gpg || \
+curl -fsSL https://raw.githubusercontent.com/deadsnakes/issues/master/deadsnakes.key | gpg --dearmor -o /etc/apt/keyrings/deadsnakes.gpg
 
 echo "deb [signed-by=/etc/apt/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main" > /etc/apt/sources.list.d/deadsnakes-ubuntu-ppa-jammy.list
 
