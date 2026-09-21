@@ -24,21 +24,17 @@ pkill -9 -f apt-get 2>/dev/null || true
 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
 dpkg --configure -a 2>/dev/null || true
 
-# 2. Add deadsnakes PPA and install Python 3.12 (with manual GPG key fallback)
+# 2. Add deadsnakes PPA manually to bypass Launchpad API HTTP 500 errors
 sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list
 apt-get update -qq
 apt-get install -y -qq software-properties-common ca-certificates dirmngr gnupg
 
-# Add the GPG key for the deadsnakes PPA, with a fallback to a different keyserver if the first fails
-apt-key adv --keyserver keyserver.ubuntu.com --recv-keys BA6932366A755776 || true
+# Add the deadsnakes PPA key and repository manually
+mkdir -p /etc/apt/keyrings
+gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys BA6932366A755776 || true
+gpg --export BA6932366A755776 > /etc/apt/keyrings/deadsnakes.gpg 2>/dev/null || true
 
-for i in {1..5}; do
-    if add-apt-repository -y ppa:deadsnakes/ppa; then
-        break
-    fi
-    echo "Failed to add PPA, retrying in 5 seconds (attempt $i/5)..."
-    sleep 5
-done
+echo "deb [signed-by=/etc/apt/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main" > /etc/apt/sources.list.d/deadsnakes-ubuntu-ppa-jammy.list
 
 apt-get update -qq
 apt-get install -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
