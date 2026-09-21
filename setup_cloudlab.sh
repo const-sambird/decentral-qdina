@@ -24,11 +24,19 @@ pkill -9 -f apt-get 2>/dev/null || true
 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
 dpkg --configure -a 2>/dev/null || true
 
-# 2. Add deadsnakes PPA and install Python 3.12
+# 2. Add deadsnakes PPA and install Python 3.12 (with retry loop for transient server failures)
 sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list
 apt-get update -qq
 apt-get install -y -qq software-properties-common ca-certificates dirmngr
-add-apt-repository -y ppa:deadsnakes/ppa
+
+for i in {1..5}; do
+    if add-apt-repository -y ppa:deadsnakes/ppa; then
+        break
+    fi
+    echo "Failed to add PPA, retrying in 5 seconds (attempt $i/5)..."
+    sleep 5
+done
+
 apt-get update -qq
 apt-get install -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     git tmux netcat-openbsd curl build-essential gcc make psmisc \
