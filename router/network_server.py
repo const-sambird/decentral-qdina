@@ -84,28 +84,18 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
         self.knapsack_metrics = {}
 
-        # -----------------------------------------------------------------
-        # DINA-faithful heuristic state
-        # -----------------------------------------------------------------
-        # `_last_known_cost_matrix` caches the most recent *non-zero* cost that
-        # each (template, replica) pair was reported to have. This is essential
-        # because a worker only reports costs for templates it actually received;
-        # unreceived templates get a cost of 0, which would otherwise poison
-        # `np.argmin` and cause the routing table to oscillate (see log analysis:
-        # table flips between all-0 and all-1 because `argmin` picks the first
-        # replica whose reported cost is 0).
+        # Cache of last known non-zero cost per (template, replica).
+        # Workers report 0 for templates they didn't receive, which would
+        # otherwise poison `argmin` and make the routing table oscillate.
         self._last_known_cost_matrix = np.zeros((n_templates, n_replicas), dtype=np.float64)
 
-        # Templates that contain INSERT/UPDATE/DELETE statements. DINA routes
-        # these to *every* replica (sentinel value -1 in `Router.evaluate()`),
-        # because replicated data must stay consistent across the cluster.
-        # Populated externally via `set_update_templates()`.
+        # Templates containing INSERT/UPDATE/DELETE; routed to every replica
+        # (DINA's sentinel `routes[template] = -1` behaviour).
         self._update_templates = set()
-        # -----------------------------------------------------------------
 
         self.metrics_file = None
         self.csv_writer = None
-        self.total_actions = 0  # global counter
+        self.total_actions = 0
         if metrics_file:
             self.metrics_file = open(metrics_file, 'w', newline='')
             self.csv_writer = csv.writer(self.metrics_file)
@@ -117,17 +107,11 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.param_layers = param_layers
         self.reset_complete = False
 
-    # -------------------------------------------------------------------------
-    # DINA-faithful helper : declare which templates are update templates
-    # -------------------------------------------------------------------------
     def set_update_templates(self, templates):
         '''
         Register the set of template IDs that contain INSERT/UPDATE/DELETE
         statements. These templates are routed to every replica (broadcast),
-        mirroring the `routes[template] = -1` sentinel used in DINA's
-        `Router.evaluate()`.
-
-        :param templates: iterable of integer template IDs
+        mirroring DINA's `routes[template] = -1` sentinel.
         '''
         self._update_templates = set(int(t) for t in templates)
 
@@ -306,39 +290,16 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                             self.step_computed = True
                             try:
                                 # Leader computes the next routing decision.
-                                # Gather total costs from all workers.
                                 sorted_workers = sorted(self.collected_metrics.keys())
-                                costs_array = np.array(
-                                    [self.collected_metrics[w_id]['total_cost'] for w_id in sorted_workers],
-                                    dtype=np.float64
-                                )
-
-                                # Get current state from the global environment.
                                 state = self.env._get_obs()
 
                                 # Decide whether to change routing or do nothing.
                                 if self.router_mode == 'heuristic':
-                                    # --------------------------------------------------
-                                    # DINA-faithful heuristic routing.
-                                    # Mirrors `Router.evaluate()` from the original
-                                    # DINA codebase:
-                                    #   1. argmin over per-template costs (with a
-                                    #      last-known-cost fallback to avoid the
-                                    #      0-cost "ghost" problem),
-                                    #   2. fallback for templates with no cost at
-                                    #      all -> least-loaded replica,
-                                    #   3. update templates are broadcast to every
-                                    #      replica (handled in _get_routed_slice_for_node).
-                                    # --------------------------------------------------
+                                    # DINA-faithful heuristic routing (see _dina_heuristic_routing).
                                     next_routes = self._dina_heuristic_routing(sorted_workers)
                                     self.routing_table_state = next_routes
                                     self.env._state_routes = next_routes.copy()
                                     action = 0
-
-                                    # Recompose the per-template cost matrix the
-                                    # environment expects, from the cached
-                                    # non-zero matrix (keeps the observation
-                                    # well-conditioned).
                                     template_costs_matrix = self._last_known_cost_matrix.copy()
 
                                 elif self.router_mode == 'static':
@@ -365,9 +326,32 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                     else:
                                         action = 0  # do nothing
 
+                                # Reported worker costs are full-workload and independent of
+                                # routing; derive routed cost per replica from the routing
+                                # table and the cost matrix (DINA-style).
+                                if self.router_mode == 'heuristic':
+                                    cost_source = self._last_known_cost_matrix
+                                else:
+                                    cost_source = template_costs_matrix
+
+                                routed_costs = np.zeros(self.n_replicas, dtype=np.float64)
+                                for t in range(self.n_templates):
+                                    if t in self._update_templates:
+                                        for r in range(self.n_replicas):
+                                            c = float(cost_source[t, r]) if r < cost_source.shape[1] else 0.0
+                                            if c > 0:
+                                                routed_costs[r] += c
+                                    else:
+                                        r = int(self.routing_table_state[t])
+                                        if 0 <= r < self.n_replicas and r < cost_source.shape[1]:
+                                            c = float(cost_source[t, r])
+                                            if c > 0:
+                                                routed_costs[r] += c
+
+                                costs_array = routed_costs
+
                                 # Compute current worker loads (number of queries per worker)
                                 # based on the current routing table and the workload pool.
-                                # Use explicit integer conversion and bounds checking.
                                 worker_loads_current = np.zeros(self.n_replicas, dtype=np.int32)
                                 for idx, q_text in enumerate(self.current_workload_pool):
                                     template_id = self.workload_templates_map[idx]
@@ -420,7 +404,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                     w_id: self._get_routed_slice_for_node(w_id)
                                     for w_id in self.registered_workers.keys()
                                 }
-                                # Save metrics for later export (benchmarking).
                                 self.last_known_metrics = self.collected_metrics.copy()
 
                                 # Log the current routing table and performance metrics.
@@ -447,7 +430,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                     # Last step: signal stop, do NOT compute slices for next step
                                     self.stop_training_signal = True
                                     self.global_step_counter += 1
-                                    self.next_workload_slices = {}  # empty, will not be used
+                                    self.next_workload_slices = {}
                                 else:
                                     # Normal step: compute slices for the next step
                                     self.routing_table_state = np.copy(next_state[:self.env.n_templates])
@@ -500,38 +483,13 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                            epsilon=self.epsilon,
                                            param_layers=self.param_layers)
 
-    # -------------------------------------------------------------------------
-    # DINA-faithful heuristic routing
-    # -------------------------------------------------------------------------
     def _dina_heuristic_routing(self, sorted_workers):
         '''
-        Reproduces the routing decision logic from DINA's `Router.evaluate()`.
-
-        The original code is:
-
-            routes = np.argmin(self.times, axis=0)
-            query_costs = [self.times[rep][i] for i, rep in enumerate(routes)]
-            for t in update_templates:
-                routes[t] = -1
-            for r in range(num_replicas):
-                for t in range(num_templates):
-                    if routes[t] == r or routes[t] == -1:
-                        replica_costs[r] += query_costs[t]
-            min_replica = np.argmin(replica_costs)
-            for i, c in enumerate(query_costs):
-                if c == 0:
-                    routes[i] = min_replica
-
-        Adaptation for our distributed architecture:
-          * Each worker only reports costs for the templates it actually received.
-            Templates that were not received report 0, which would break `argmin`.
-            We therefore substitute a "last known" cost when available, and +inf
-            otherwise (so that unseen pairs are never selected by `argmin`).
-          * Update templates are NOT encoded as -1 in `routing_table_state` (our
-            slicing code uses the table directly). Instead, the broadcast is
-            handled by `_get_routed_slice_for_node`, which sends update queries
-            to every replica. The update templates are still counted on every
-            replica when computing `replica_loads`, matching DINA's intent.
+        Reproduces DINA's `Router.evaluate()` routing logic:
+          1. argmin per template over the cost matrix (with last-known-cost
+             fallback for unseen pairs),
+          2. fallback for zero-cost templates -> least-loaded replica,
+          3. update templates charged to every replica.
 
         :param sorted_workers: list of worker ids in a stable order; index
             r in the internal matrix corresponds to `sorted_workers[r]`.
@@ -554,7 +512,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     prev = self._last_known_cost_matrix[t, r_idx]
                     if prev > 0.0:
                         matrix[t, r_idx] = prev
-                    # else: stays +inf, so argmin won't pick it.
 
         # Persist the best-known non-zero costs for the next step.
         finite_mask = np.isfinite(matrix)
@@ -579,8 +536,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 if np.isfinite(matrix[t, r]):
                     replica_loads[r] += matrix[t, r]
 
-        # 3) Fallback: templates that have no known cost anywhere go to the
-        #    least-loaded replica (DINA's zero-cost fallback rule).
+        # 3) Fallback: zero-cost templates go to the least-loaded replica.
         min_replica = int(np.argmin(replica_loads))
         for t in range(self.n_templates):
             if not np.any(np.isfinite(matrix[t])):
@@ -590,9 +546,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
     def _get_routed_slice_for_node(self, node_id):
         """Compute the list of queries to be routed to a specific worker node.
-
-        Depending on the execution mode ('uniform' or 'drift'), queries are either
-        assigned round-robin or based on the routing table.
 
         Update templates (INSERT/UPDATE/DELETE) are broadcast to every replica,
         mirroring DINA's sentinel `routes[template] = -1`.
