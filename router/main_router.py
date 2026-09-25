@@ -50,7 +50,7 @@ if __name__ == '__main__':
                         help="Routing strategy to use: "
                             "'learned' (DQN, default), "
                             "'static' (no routing changes), "
-                            "'heuristic' (DiversityClusterDB heuristic).")
+                            "'heuristic' (Dina heuristic).")
 
     args = parser.parse_args()
     
@@ -135,7 +135,11 @@ if __name__ == '__main__':
                 servicer.stop_training_signal = False
                 servicer.steps_since_last_change = 0
                 servicer.global_step_counter = 0
-            
+                servicer.global_epoch = episode
+                # Reset the reward baseline for the new episode
+                servicer.env._max_makespan = None
+                servicer.env._previous_makespan = None
+
             if args.mode == 'drift' and episode > 0:
                 workload_mgr.update_workload()
                 current_queries = workload_mgr.workload()

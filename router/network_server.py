@@ -9,8 +9,6 @@ import os
 from protos import qdina_pb2
 from protos import qdina_pb2_grpc
 
-from router.static_router_agent import StaticRouterAgent
-from router.heuristic_router_agent import HeuristicRouterAgent
 from router.environment_global import GlobalRoutingEnv
 from router.router_agent import RouterAgent
 from common.replay_memory import ReplayMemory
@@ -33,18 +31,11 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                 n_replicas=n_replicas,
                 n_actions=self.env.n_actions,
             )
-        elif router_mode == 'static':
-            self.agent = StaticRouterAgent(
-                n_templates=n_templates,
-                n_replicas=n_replicas,
-                n_actions=self.env.n_actions,
-            )
-        elif router_mode == 'heuristic':
-            self.agent = HeuristicRouterAgent(
-                n_templates=n_templates,
-                n_replicas=n_replicas,
-                n_actions=self.env.n_actions,
-            )
+        elif router_mode == 'static' or router_mode == 'heuristic':
+            # No learned agent in these modes. The routing table is either kept
+            # fixed ('static') or overwritten by the DINA heuristic ('heuristic')
+            # directly in SubmitMetricsAndGetWorkload.
+            self.agent = None
         else:
             raise ValueError(f"Unknown router mode: {router_mode}")
 
@@ -289,12 +280,32 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 state = self.env._get_obs()
 
                                 # Decide whether to change routing or do nothing.
-                                self.steps_since_last_change += 1
-                                if self.steps_since_last_change >= self.routing_change_interval:
-                                    action = self.agent.select_action(state, self.epsilon)
-                                    self.steps_since_last_change = 0
+                                if self.router_mode == 'heuristic':
+                                    # DINA heuristic: route each template to the
+                                    # replica with the lowest estimated cost.
+                                    # Applied directly (no agent), following Sam's
+                                    # suggestion. This introduces workload skew
+                                    # because most templates collapse onto the
+                                    # same replica.
+                                    best_replicas = np.argmin(template_costs_matrix, axis=1)
+                                    self.routing_table_state = best_replicas.astype(np.int32)
+                                    self.env._state_routes = self.routing_table_state.copy()
+                                    action = 0
+
+                                elif self.router_mode == 'static':
+                                    # Uniform static: keep the greedy-uniform table
+                                    # initialised at the beginning of the episode.
+                                    action = 0
+
                                 else:
-                                    action = 0  # do nothing
+                                    # Learned router: apply the DQN every
+                                    # routing_change_interval steps.
+                                    self.steps_since_last_change += 1
+                                    if self.steps_since_last_change >= self.routing_change_interval:
+                                        action = self.agent.select_action(state, self.epsilon)
+                                        self.steps_since_last_change = 0
+                                    else:
+                                        action = 0  # do nothing
 
                                 # Compute current worker loads (number of queries per worker)
                                 # based on the current routing table and the workload pool.
@@ -357,7 +368,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 # Log the current routing table and performance metrics.
                                 table_str = " ".join(str(int(node)) for node in self.routing_table_state)
                                 print(f"[Router State] Table : [{table_str}]")
-                                print(f"[Router Learn] Step {self.global_step_counter:2d} | "
+                                print(f"[Router {self.router_mode}] Step {self.global_step_counter:2d} | "
                                     f"Makespan: {'{:,}'.format(int(np.max(costs_array))).replace(',', ' '):>18} | "
                                     f"Jain Index: {info.get('jain_index', 1.0):.4f} | "
                                     f"Reward: {reward:15.2f} | "
@@ -365,10 +376,11 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                     f"Workers: {len(sorted_workers)}")
 
                                 # Store the experience in the replay memory for training.
-                                self.router_memory.push(state, action, next_state, reward, None)
+                                if self.agent is not None:
+                                    self.router_memory.push(state, action, next_state, reward, None)
 
                                 # If we have enough experiences, perform a learning step.
-                                if len(self.router_memory) >= self.batch_size:
+                                if self.agent is not None and len(self.router_memory) >= self.batch_size:
                                     self.agent.learn(self.router_memory, self.batch_size)
                                     self.agent.soft_update()
 
