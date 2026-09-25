@@ -18,12 +18,12 @@ from agent.qnn import QuantumDQN
 from common.spsa_opt import SPSAOptimiser
 from common.replay_memory import ReplayMemory
 from agent.database import Replica
-from common.preprocessor import Preprocessor 
+from common.preprocessor import Preprocessor
 from common.profiling import Profiler
 
 class QDinaNetworkClient:
-    def __init__(self, replica_id: int, server_address: str, agent_mode: str, 
-                 db_host: str, db_port: int, db_user: str, db_password: str, 
+    def __init__(self, replica_id: int, server_address: str, agent_mode: str,
+                 db_host: str, db_port: int, db_user: str, db_password: str,
                  db_name: str, budget_mode: str, storage_budget: float = 10.0):
         '''
         Decentralized gRPC Client worker orchestrating local reinforcement learning indexing.
@@ -37,28 +37,27 @@ class QDinaNetworkClient:
         self.db_password = db_password
         self.db_name = db_name
         self.budget_mode = budget_mode
-        
+
         print(f"[Worker Client {self.replica_id}] Linking gRPC channel to {server_address}...")
         self.channel = grpc.insecure_channel(server_address)
         self.stub = qdina_pb2_grpc.QDinaServiceStub(self.channel)
-        
+
         self.n_templates = 22
-        self.n_candidates = 0 
-        self.candidates = []   
+        self.n_candidates = 0
+        self.candidates = []
         self.templates_map = []
-        
+
         self.policy_net = None
         self.target_net = None
         self.optimizer = None
         self.loss_fn = nn.MSELoss()
-        
+
         self.local_memory = ReplayMemory(capacity=50000)
         self.batch_size = 32
         self.gamma = 0.99
         self.epsilon = 1.0
         self.episode_step_count = 0
 
-        
         self.env = None
 
         self._step_counter = 0
@@ -67,10 +66,6 @@ class QDinaNetworkClient:
 
     def register_to_master(self, local_hostname: str = '127.0.0.1', local_port: int = 5432):
         """Register this worker node with the master router via gRPC.
-
-        Args:
-            local_hostname (str): The hostname or IP address of this worker.
-            local_port (int): The port this worker listens on (if any).
 
         Returns:
             bool: True if registration succeeded, False otherwise.
@@ -88,19 +83,15 @@ class QDinaNetworkClient:
             print(f"[Worker Client {self.replica_id}] Critical failure during registration step: {e.details()}")
             return False
 
-
     def _init_agent_networks(self):
         """
         Initialize the policy and target networks and the optimizer.
         Chooses between classical DQN and quantum DQN based on self.agent_mode.
-        For quantum mode, the number of qubits is dynamically computed to ensure that
-        the output dimension (2^n_qubits) is at least the number of actions.
         """
         n_actions = self.env.action_space.n
         n_observations = 2 * self.n_templates + self.n_candidates
 
         if self.agent_mode == 'classical':
-            # Classical DQN with two hidden layers
             self.policy_net = DQN(n_observations, n_actions, layer_features=[256, 128, 64])
             self.target_net = DQN(n_observations, n_actions, layer_features=[256, 128, 64])
             self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -108,26 +99,18 @@ class QDinaNetworkClient:
             self.optimizer = optim.Adam(self.policy_net.parameters(), lr=1e-3)
             print(f"[Worker Client {self.replica_id}] Classical DQN Policy Network built successfully.")
         elif self.agent_mode == 'quantum':
-            # Compute minimal number of qubits needed:
-            # We need 2^n_qubits >= n_actions. Use bit_length trick:
-            # (n_actions - 1).bit_length() gives ceil(log2(n_actions))
-            # We enforce a minimum of 8 qubits for stability.
-            n_qubits = max(8, int(n_actions - 1).bit_length())            
+            n_qubits = max(8, int(n_actions - 1).bit_length())
 
-            # Build the quantum DQN with the computed qubit count
             self.policy_net = QuantumDQN(
                 n_inputs=n_observations,
                 n_qubits=n_qubits,
                 n_actions=n_actions,
                 qnn_type='twolocal',
-                qnn_output='layer',       # Use a classical output layer on top of QNN
+                qnn_output='layer',
                 n_shots=1024,
-                torch_device='cpu',        # Adjust if GPU available
+                torch_device='cpu',
                 param_layers=self.param_layers
             )
-            # In quantum mode we do not maintain a separate target net; we can reuse the policy net
-            # but we keep it separate for consistency (soft updates would be needed).
-            # Here we create a copy for the target net (using the same architecture).
             self.target_net = QuantumDQN(
                 n_inputs=n_observations,
                 n_qubits=n_qubits,
@@ -140,8 +123,7 @@ class QDinaNetworkClient:
             )
             self.target_net.load_state_dict(self.policy_net.state_dict())
             self.target_net.eval()
-            
-            # Use SPSA optimizer for quantum network (gradient-free optimization)
+
             self.optimizer = SPSAOptimiser(
                 self.policy_net,
                 lr=0.1,
@@ -152,37 +134,28 @@ class QDinaNetworkClient:
     def _select_action(self, state):
         """Select an action using an epsilon-greedy policy.
 
-        Args:
-            state: The current environment observation.
-
         Returns:
             int: The chosen action index.
         """
         if random.random() < self.epsilon:
             return random.randint(0, self.env.action_space.n - 1)
-        start = time.time()
         state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             q_values = self.policy_net(state_tensor)
             action = q_values.argmax().item()
-        elapsed = time.time() - start
-        # print(f"[TIMER Worker {self.replica_id}] _select_action forward pass took {elapsed*1000:.2f}ms")
         return action
 
     def _optimize_local_model(self):
         """Perform one optimization step on the local DQN using the replay memory.
-
-        Samples a batch of transitions and updates the network weights.
         """
         if len(self.local_memory) < self.batch_size:
             return
-        start = time.time()
 
         transitions = self.local_memory.sample(self.batch_size)
         states, actions, rewards, next_states, dones = zip(*transitions)
-        
+
         expected_size = 2 * self.n_templates + self.n_candidates
-        
+
         fixed_states = []
         for s in states:
             s_np = np.asarray(s, dtype=np.float32).flatten()
@@ -203,98 +176,63 @@ class QDinaNetworkClient:
 
         state_b = torch.stack(fixed_states)
         next_state_b = torch.stack(fixed_next_states)
-        
+
         current_batch_size = state_b.size(0)
-        
+
         rewards_clean = [r[0] if isinstance(r, (list, np.ndarray)) and len(r) > 0 else r for r in rewards]
         dones_clean = [float(d[0]) if isinstance(d, (list, np.ndarray)) and len(d) > 0 else float(d) for d in dones]
 
         action_b = torch.tensor(actions, dtype=torch.long).view(current_batch_size, 1)
         reward_b = torch.tensor(np.array(rewards_clean), dtype=torch.float32).view(current_batch_size, 1)
         done_b = torch.tensor(np.array(dones_clean), dtype=torch.float32).view(current_batch_size, 1)
-        
+
         if self.agent_mode == 'classical':
             policy_outputs = self.policy_net(state_b).view(current_batch_size, -1)
             current_q_values = policy_outputs.gather(1, action_b)
-            
+
             with torch.no_grad():
                 target_outputs = self.target_net(next_state_b).view(current_batch_size, -1)
                 max_next_q_values = target_outputs.max(1)[0].view(current_batch_size, 1)
                 target_q_values = reward_b + (self.gamma * max_next_q_values * (1 - done_b))
-            
+
             loss = self.loss_fn(current_q_values, target_q_values)
             self.optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
             self.optimizer.step()
-            
+
             self._step_counter += 1
             if self._step_counter % self.target_update_freq == 0:
                 self.target_net.load_state_dict(self.policy_net.state_dict())
-                            
+
         elif self.agent_mode == 'quantum':
             def closure():
                 policy_outputs = self.policy_net(state_b).view(current_batch_size, -1)
                 current_q = policy_outputs.gather(1, action_b)
-                
+
                 with torch.no_grad():
                     target_outputs = self.policy_net(next_state_b).view(current_batch_size, -1)
                     max_next_q = target_outputs.max(1)[0].view(current_batch_size, 1)
                     target_q = reward_b + (self.gamma * max_next_q * (1 - done_b))
-                    
+
                 loss = self.loss_fn(current_q, target_q)
                 return loss
-                
+
             self.optimizer.step(closure)
-        elapsed = time.time() - start
-        # print(f"[TIMER Worker {self.replica_id}] _optimize_local_model took {elapsed:.3f}s")
 
     def run_training(self):
         """Main training loop for the local reinforcement learning agent.
-
-        Registers with the master router, initializes the environment and networks,
-        then repeatedly submits metrics, receives sliced workloads, executes actions,
-        stores transitions, and updates the local model. Handles episode resets and
-        connection errors.
         """
         print(f"[Worker Client {self.replica_id}] Initiating registration protocol with Master Router...")
         registered = self.register_to_master(local_hostname=self.db_host, local_port=self.db_port)
         if not registered:
             print(f"[Worker Client {self.replica_id}] Registration failed. Proceeding with caution...")
-            
+
         print(f"[Worker Client {self.replica_id}] Launching local environment worker loop...")
-        
+
         current_cost_tracker = 0.0
         current_storage_usage = 0.0
         costs_per_template = [0.0] * self.n_templates
-        
-        # self.candidates = [
-        #     ('lineitem', ['l_orderkey']),
-        #     ('lineitem', ['l_partkey']),
-        #     ('lineitem', ['l_suppkey']),
-        #     ('lineitem', ['l_shipdate']),
-        #     ('lineitem', ['l_commitdate']),
-        #     ('lineitem', ['l_receiptdate']),
-        #     ('lineitem', ['l_returnflag']),
-            
-        #     ('orders', ['o_custkey']),
-        #     ('orders', ['o_orderdate']),
-        #     ('orders', ['o_orderkey']),
-            
-        #     ('customer', ['c_nationkey']),
-        #     ('customer', ['c_mktsegment']),
-        #     ('supplier', ['s_nationkey']),
-        #     ('supplier', ['s_suppkey']),
-            
-        #     ('part', ['p_partkey']),
-        #     ('part', ['p_type']),
-        #     ('part', ['p_size']),
-        #     ('partsupp', ['ps_partkey']),
-        #     ('partsupp', ['ps_suppkey']),
-            
-        #     ('lineitem', ['l_partkey', 'l_suppkey']),
-        #     ('orders', ['o_custkey', 'o_orderdate'])
-        # ]
 
         from common.query_loader import load_training_set_queries
         queries, templates = load_training_set_queries('./workload_output/', fraction=1.0)
@@ -303,7 +241,7 @@ class QDinaNetworkClient:
         self.n_candidates = len(self.candidates)
 
         self.templates_map = list(range(self.n_templates))
-        
+
         if self.env is None:
             self.env = LocalIndexingEnv(
                 replica_id=self.replica_id, hostname=self.db_host, port=self.db_port,
@@ -312,10 +250,13 @@ class QDinaNetworkClient:
                 n_templates=self.n_templates, storage_budget=self.storage_budget,
                 agent_type=self.agent_mode, budget_mode=self.budget_mode
             )
-            
+
+        # Give the env the full workload so it can cost every template (DINA-style).
+        self.env.set_full_workload(queries, templates)
+
         self._init_agent_networks()
         local_state, _ = self.env.reset()
-        
+
         while True:
             try:
                 metrics = qdina_pb2.LocalMetrics(
@@ -326,10 +267,10 @@ class QDinaNetworkClient:
                     active_indexes=self.env.get_active_index_names()
                 )
                 response = self.stub.SubmitMetricsAndGetWorkload(metrics)
-                
+
                 if response.stop_training:
                     response, local_state, current_cost_tracker, current_storage_usage, costs_per_template = self._handle_stop_training()
-                
+
                 current_queries = list(response.queries)
                 if not current_queries:
                     print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node for the current step.")
@@ -337,8 +278,9 @@ class QDinaNetworkClient:
                     current_queries = list(response.queries)
                 if not current_queries:
                     print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node. Reporting idle state.")
-                    current_cost_tracker = 0.0
-                    costs_per_template = [0.0] * self.n_templates
+                    # Report the full-workload cost so the master still has a valid signal.
+                    costs_per_template = self.env.estimate_full_workload_costs()
+                    current_cost_tracker = float(sum(costs_per_template))
                     time.sleep(0.2)
                     continue
 
@@ -347,23 +289,23 @@ class QDinaNetworkClient:
 
                 if response.param_layers is not None:
                     self.param_layers = response.param_layers
-                
+
                 print(f"[Worker Client {self.replica_id}] Sliced workload received containing {len(current_queries)} active queries.")
                 dynamic_templates_map = [hash(q_text) % self.n_templates for q_text in current_queries]
                 self.env.templates = dynamic_templates_map
-
-                step_start = time.time()
 
                 action = self._select_action(local_state)
                 next_state, reward, terminated, truncated, info = self.env.step(action, queries=current_queries)
 
                 if terminated:
                     print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
-                    current_cost_tracker = info.get('total_cost', 0.0)
+
+                    # Report the full-workload cost so the master has a complete matrix.
+                    costs_per_template = self.env.estimate_full_workload_costs()
+                    current_cost_tracker = float(sum(costs_per_template))
                     current_storage_usage = info.get('storage', 0.0)
-                    costs_per_template = info.get('costs_knapsack', [0.0] * self.n_templates)
                     active_indexes = self.env.get_active_index_names()
-                    
+
                     metrics = qdina_pb2.LocalMetrics(
                         replica_id=self.replica_id,
                         total_cost=current_cost_tracker,
@@ -376,40 +318,26 @@ class QDinaNetworkClient:
                     if response.stop_training:
                         response, local_state, current_cost_tracker, current_storage_usage, costs_per_template = self._handle_stop_training()
                         continue
-                    
+
                     local_state, _ = self.env.reset()
                     current_cost_tracker = 0.0
                     current_storage_usage = 0.0
-                    costs_per_template = [0.0] * self.n_templates                    
-                    continue 
+                    costs_per_template = [0.0] * self.n_templates
+                    continue
 
                 self.local_memory.push(local_state, action, next_state, reward, terminated)
                 local_state = next_state
 
-                optim_start = time.time()
                 self._optimize_local_model()
-                # print(f"[TIMER Worker {self.replica_id}] optimization took {time.time() - optim_start:.3f}s")
 
-                current_cost_tracker = info.get('total_cost', 0.0)
                 current_storage_usage = info.get('storage', 0.0)
 
-                if self.budget_mode == 'enforce':
-                    if 'costs' in info:
-                        costs_per_template = [float(c) for c in info['costs']]
-                    else:
-                        costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
-                elif self.budget_mode == 'ignore':
-                    if 'costs_knapsack' in info and info['costs_knapsack']:
-                        costs_per_template = [float(c) for c in info['costs_knapsack']]
-                    else:
-                        costs_per_template = [current_cost_tracker / self.n_templates] * self.n_templates
-
-                elapsed_step = time.time() - step_start
-                # print(f"[TIMER Worker {self.replica_id}] full step (action+env+memory+optim) took {elapsed_step:.2f}s")
+                # Report the full-workload cost so the master can do a real argmin.
+                costs_per_template = self.env.estimate_full_workload_costs()
+                current_cost_tracker = float(sum(costs_per_template))
 
                 storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
                 print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Reward {reward:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.3f}")
-
 
             except grpc.RpcError as e:
                 print(f"[Worker Client {self.replica_id}] Connection lost with master router. Retrying in 5 seconds... ({e.code()})")
@@ -417,13 +345,6 @@ class QDinaNetworkClient:
 
     def _generate_candidates(self, queries: list[str], templates: list[int]) -> list[tuple[str, tuple[str, ...]]]:
         """Generate index candidates from the given workload using the Preprocessor.
-
-        This method connects to the database, runs the preprocessor to extract
-        candidate columns, and returns them as (table, columns) tuples.
-
-        Args:
-            queries (list[str]): The full workload queries.
-            templates (list[int]): Template IDs for each query.
 
         Returns:
             list[tuple[str, tuple[str, ...]]]: A list of candidates, each as a tuple
@@ -447,14 +368,13 @@ class QDinaNetworkClient:
         )
 
         preprocessor.preprocess(candidate_path=None, max_candidates=None)
-        
+
         candidates_with_table = []
         for cand in preprocessor.candidates:
             table = preprocessor.cols_to_table[cand[0]]
             candidates_with_table.append((table, cand))
-        
+
         return candidates_with_table
-    
 
     def _handle_stop_training(self):
         """
@@ -467,21 +387,20 @@ class QDinaNetworkClient:
         print(f"[Worker Client {self.replica_id}] Master broadcasted stop_training signal. "
             f"Resetting local environment and acknowledging...")
 
-        # Capture active indexes before resetting
-        # active_indexes = self.env.get_active_index_names()
-
         knapsack_indexes = self.env.get_knapsack_selection()
         active_indexes = [f"{table}_{'_'.join(cols)}" for table, cols in knapsack_indexes]
         print(f"[Worker {self.replica_id}] Knapsack selected {len(knapsack_indexes)} indexes within {self.storage_budget/1e9:.1f} GB budget.")
 
-        # Reset the local environment and counters
         local_state, _ = self.env.reset()
         self.episode_step_count = 0
         current_cost_tracker = 0.0
         current_storage_usage = 0.0
-        costs_per_template = [0.0] * self.n_templates
 
-        # Build the acknowledgment message
+        # Report the full-workload cost on reset so the master immediately
+        # has a full matrix for the next episode.
+        costs_per_template = self.env.estimate_full_workload_costs()
+        current_cost_tracker = float(sum(costs_per_template))
+
         ack_metrics = qdina_pb2.LocalMetrics(
             replica_id=self.replica_id,
             total_cost=current_cost_tracker,
@@ -491,11 +410,9 @@ class QDinaNetworkClient:
             local_reset=True
         )
 
-        # Wait until the server confirms the episode end (stop_training=False)
         while True:
             ack_response = self.stub.SubmitMetricsAndGetWorkload(ack_metrics)
             if not ack_response.stop_training:
-                # New workload received
                 return (ack_response, local_state, current_cost_tracker,
                         current_storage_usage, costs_per_template)
             else:

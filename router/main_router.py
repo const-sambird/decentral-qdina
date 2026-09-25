@@ -88,6 +88,8 @@ if __name__ == '__main__':
     servicer = QDinaServerServicer(n_replicas=num_replicas, n_templates=22, batch_size=64,
                                    metrics_file=metrics_file, param_layers=args.param_layers, 
                                    steps_per_episode=steps_per_episode, router_mode=args.router_mode)
+    if hasattr(workload_mgr, 'update_templates'):
+        servicer.set_update_templates(workload_mgr.update_templates())
 
     servicer.execution_mode = args.mode
     servicer.current_workload_pool = initial_queries

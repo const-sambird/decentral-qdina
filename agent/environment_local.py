@@ -66,7 +66,32 @@ class LocalIndexingEnv(gym.Env):
         self.best_cost = float('inf')
 
         self.index_gains = {}
-        self._cost_cache = {} 
+        self._cost_cache = {}
+
+        # Full workload reference (used for DINA-style full cost estimation)
+        self._full_workload_queries = []
+        self._full_templates_map = []
+
+    def set_full_workload(self, queries, templates):
+        """Store the full workload so we can cost every template."""
+        self._full_workload_queries = list(queries)
+        self._full_templates_map = list(templates)
+
+    def estimate_full_workload_costs(self):
+        """Estimate cost of the full workload under current indexes.
+
+        Returns a length-n_templates vector, like DINA's CostEstimator.
+        """
+        if not self._full_workload_queries:
+            return list(self.last_costs)
+
+        saved_templates = self.templates
+        try:
+            self.templates = self._full_templates_map
+            costs = self._estimate_workload_costs(self._full_workload_queries)
+        finally:
+            self.templates = saved_templates
+        return costs
 
     def _get_candidate_size(self, candidate) -> int:
         """
@@ -135,12 +160,8 @@ class LocalIndexingEnv(gym.Env):
             p.start()
             costs = local_queue.get(timeout=600)
             p.join()
-            elapsed = time.time() - start_total
-            # print(f"[TIMER Worker {self.replica_id}] _estimate_workload_costs: {elapsed:.2f}s for {len(queries)} queries")
             return costs
         except Exception as e:
-            elapsed = time.time() - start_total
-            # print(f"[TIMER Worker {self.replica_id}] _estimate_workload_costs failed after {elapsed:.2f}s: {e}")
             print(f"[Worker Indexing Env {self.replica_id} Warning] Cost estimation failed or timed out: {e}. Returning fallback costs.")
             if p.is_alive():
                 p.terminate()
@@ -245,7 +266,7 @@ class LocalIndexingEnv(gym.Env):
                 # Invalid: index already present -> penalize and return
                 reward = -1.0
                 return self._get_obs(), reward, False, False, {
-                    'costs': self.last_costs,   # keep previous costs
+                    'costs': self.last_costs,
                     'total_cost': sum(self.last_costs),
                     'storage': self._spaces_used,
                     'agent_mode': self.agent_type,
@@ -274,10 +295,7 @@ class LocalIndexingEnv(gym.Env):
         old_storage = self._spaces_used
 
         # Estimate initial costs (without the modification)
-        init_start = time.time()
         self.initial_costs = self._estimate_workload_costs(queries)
-        # print(f"[TIMER Worker {self.replica_id}] initial cost estimation took {time.time() - init_start:.2f}s")
-
         initial_total = sum(self.initial_costs)
 
         # Apply the action (add or drop)
@@ -308,40 +326,32 @@ class LocalIndexingEnv(gym.Env):
         # Estimate costs
         # Run current cost and knapsack cost in parallel when in 'ignore' mode with gains
         if self.budget_mode == 'ignore' and self.index_gains:
-            t0 = time.time()
             knapsack_indexes = self.get_knapsack_selection()
             conn_string = f"host={self.hostname} port={self.port} dbname={self.db_name} user={self.user} password={self.password}"
             active_indexes = [self.candidates[i] for i, v in enumerate(self._current_indexes) if v == 1]
-            # Create two queues to receive the results
             queue1 = Queue()
             queue2 = Queue()
-            
-            # First process: current cost estimation
+
             p1 = Process(target=_run_cost_estimator,
                         args=(queries, self.templates, active_indexes, conn_string, self.n_templates, queue1))
             p1.start()
-            
-            # Second process: knapsack cost estimation (if indexes are selected)
+
             p2 = None
             if knapsack_indexes:
                 p2 = Process(target=_run_cost_estimator,
                             args=(queries, self.templates, knapsack_indexes, conn_string, self.n_templates, queue2))
                 p2.start()
-            
-            # Retrieve the results (timeout 600s)
+
             current_costs = queue1.get(timeout=600)
             costs_knapsack = queue2.get(timeout=600) if p2 else [0.0] * self.n_templates
-            # print(f"[TIMER Worker {self.replica_id}] parallel cost estimation took {time.time() - t0:.2f}s")
 
             p1.join()
             if p2:
                 p2.join()
         else:
-            t0 = time.time()
             # Sequential execution
             current_costs = self._estimate_workload_costs(queries)
             costs_knapsack = [0.0] * self.n_templates
-            # print(f"[TIMER Worker {self.replica_id}] sequential cost estimation took {time.time() - t0:.2f}s")
 
         current_total = sum(current_costs)
         self.last_costs = current_costs[:]
@@ -371,16 +381,13 @@ class LocalIndexingEnv(gym.Env):
         # Non-linear transformation to heavily penalize cost increases and reward decreases
         if not adding:  # Dropping an index
             if normalized_cost_impact > 0:
-                # Quadratic penalty: (1 + impact)^2 - 1
                 penalty_cost = (1.0 + normalized_cost_impact) ** 2 - 1.0
             else:
-                # If cost decreased (rare), small reward
                 penalty_cost = -0.1 * normalized_cost_saving
             bonus_drop = 1.0
             reward = -penalty_cost - storage_penalty - toggle_penalty - active_index_penalty + bonus_drop
         else:  # Adding an index
             if normalized_cost_saving > 0.01:
-                # Reward using log to keep it bounded
                 reward = np.log1p(normalized_cost_saving) - storage_penalty - toggle_penalty - active_index_penalty
             else:
                 if normalized_cost_impact > 0:
@@ -411,7 +418,6 @@ class LocalIndexingEnv(gym.Env):
         if (self.best_cost_so_far is not None and self.best_cost_so_far > 0 and
             self.stagnation_counter >= self.max_stagnation_steps):
 
-            # Try to restore a saved best configuration if it is significantly better
             if (self.best_indexes is not None and
                 current_total > 2.0 * self.best_cost and
                 self.best_cost < current_total):
@@ -420,7 +426,6 @@ class LocalIndexingEnv(gym.Env):
                 self._spaces_used = self._compute_storage_from_indexes()
                 self.stagnation_counter = 0
             else:
-                # Only clear all indexes if we are in 'enforce' mode AND storage used ≤ 80% of budget
                 if self.budget_mode == 'enforce' and self._spaces_used <= 0.8 * self.storage_budget:
                     print(f"[Worker {self.replica_id}] Stagnation detected (no significant improvement for {self.max_stagnation_steps} steps), clearing all indexes.")
                     self._current_indexes[:] = 0
@@ -428,12 +433,10 @@ class LocalIndexingEnv(gym.Env):
                     self.stagnation_counter = 0
                     self.best_cost_so_far = current_total
                 else:
-                    # Do not clear; just reset the counter to avoid immediate re-trigger
                     self.stagnation_counter = 0
 
         terminated = False
         truncated = False
-        # print(f"[TIMER Worker {self.replica_id}] step total time: {time.time() - step_start:.2f}s")
         return self._get_obs(), reward, terminated, truncated, {
             'costs': current_costs,
             'costs_knapsack': costs_knapsack,
@@ -445,9 +448,6 @@ class LocalIndexingEnv(gym.Env):
     def _compute_storage_from_indexes(self):
         """Compute the total storage space used by the currently active indexes.
 
-        This method iterates over the active indexes and sums their cached sizes.
-        If a size is not cached, a default value (5_000_000 bytes) is used.
-
         Returns:
             float: Total storage used in bytes.
         """
@@ -455,18 +455,12 @@ class LocalIndexingEnv(gym.Env):
         for i, val in enumerate(self._current_indexes):
             if val == 1:
                 candidate = self.candidates[i]
-                # Use cached size or compute it
                 size = self._candidate_sizes.get(candidate, 5_000_000)
                 total += size
         return total
 
     def _get_obs(self):
         """Construct the observation vector for the reinforcement learning agent.
-
-        The observation consists of:
-            - The current workload state (template frequencies), normalized.
-            - The current binary index selection vector.
-            - The normalized costs per template (log10 scale).
 
         Returns:
             np.ndarray: Concatenated 1D observation array.
@@ -482,24 +476,18 @@ class LocalIndexingEnv(gym.Env):
         """
         Returns a boolean mask of size n_actions.
         True means the action is allowed; False means it is not allowed.
-        This mask can be used by the agent to avoid invalid actions.
         """
         mask = np.ones(self.n_actions, dtype=bool)
-        # Disable add actions for indexes already present
         for i in range(self.n_candidates):
             if self._current_indexes[i] == 1:
                 mask[i] = False
-        # Disable drop actions for indexes already absent
         for i in range(self.n_candidates):
             if self._current_indexes[i] == 0:
                 mask[self.n_candidates + i] = False
-        # The no-op action (last action) is always allowed
         return mask
 
     def get_active_index_names(self):
         """Generate human-readable names for all currently active indexes.
-
-        The name format is '{table}_{col1}_{col2}_...' for composite indexes.
 
         Returns:
             list[str]: A list of index name strings.
@@ -514,10 +502,6 @@ class LocalIndexingEnv(gym.Env):
 
     def get_knapsack_selection(self):
         """Select a subset of indexes that maximizes total gain without exceeding the storage budget.
-
-        This method uses a knapsack algorithm (branch and bound) on the recorded gains
-        and sizes of candidate indexes. The selected indexes are returned as a list
-        of (table, columns) tuples.
 
         Returns:
             list[tuple[str, tuple[str, ...]]]: List of selected index candidates.
@@ -556,13 +540,6 @@ class LocalIndexingEnv(gym.Env):
 
     def _estimate_cost_with_indexes(self, queries, indexes):
         """Estimate the total cost of the given queries assuming a specific set of hypothetical indexes.
-
-        This method uses a separate CostEstimator process (with a 600s timeout) to
-        compute costs without modifying the environment's internal state.
-
-        Args:
-            queries (list[str]): The SQL queries to estimate.
-            indexes (list): A list of (table, columns) tuples representing indexes to simulate.
 
         Returns:
             list[float]: Estimated costs per template (list length = self.n_templates).
