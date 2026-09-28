@@ -72,6 +72,10 @@ class LocalIndexingEnv(gym.Env):
         self._full_workload_queries = []
         self._full_templates_map = []
 
+        # Cache of the queries used for the previous cost estimate.
+        # Used to reuse `last_costs` as `initial_costs` when the slice hasn't changed.
+        self._last_queries = None
+
     def set_full_workload(self, queries, templates):
         """Store the full workload so we can cost every template."""
         self._full_workload_queries = list(queries)
@@ -200,6 +204,7 @@ class LocalIndexingEnv(gym.Env):
 
         self.initial_costs = self._estimate_workload_costs(incoming_queries)
         self.last_costs = self.initial_costs[:]
+        self._last_queries = list(incoming_queries)
 
         # Reset stagnation tracking
         self.stagnation_counter = 0
@@ -244,6 +249,7 @@ class LocalIndexingEnv(gym.Env):
             current_costs = self._estimate_workload_costs(queries)
             current_total = sum(current_costs)
             self.last_costs = current_costs[:]
+            self._last_queries = list(queries)
             # Reward for stability: bonus if current configuration is good
             if self.best_cost_so_far is not None and current_total <= 1.5 * self.best_cost_so_far:
                 reward = 0.5
@@ -294,8 +300,13 @@ class LocalIndexingEnv(gym.Env):
         old_indexes = self._current_indexes.copy()
         old_storage = self._spaces_used
 
-        # Estimate initial costs (without the modification)
-        self.initial_costs = self._estimate_workload_costs(queries)
+        # Estimate initial costs (without the modification).
+        # If the slice hasn't changed since the last step, the previous
+        # `current_costs` IS the initial cost for this step -> reuse it.
+        if self._last_queries is not None and self._last_queries == queries:
+            self.initial_costs = list(self.last_costs)
+        else:
+            self.initial_costs = self._estimate_workload_costs(queries)
         initial_total = sum(self.initial_costs)
 
         # Apply the action (add or drop)
@@ -355,6 +366,7 @@ class LocalIndexingEnv(gym.Env):
 
         current_total = sum(current_costs)
         self.last_costs = current_costs[:]
+        self._last_queries = list(queries)
 
         # Compute the gain (cost reduction) and update index_gains
         gain = initial_total - current_total

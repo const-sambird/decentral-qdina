@@ -47,11 +47,14 @@ if __name__ == '__main__':
     parser.add_argument('--param-layers', type=int, default=10, help='Number of ansatz repetitions (for quantum workers)')
     parser.add_argument('--router-mode', type=str, default='learned',
                         choices=['learned', 'static', 'heuristic'],
-                        help="Routing strategy to use: "
-                            "'learned' (DQN, default), "
-                            "'static' (no routing changes), "
-                            "'heuristic' (Dina heuristic).")
-
+                        help="Routing strategy used by the master: "
+                            "'learned' = DQN-based learned router (default); "
+                            "'static' = fixed uniform routing, no changes; "
+                            "'heuristic' = DiversityClusterDB benefit-first load-aware routing "
+                            "(Hang 2024, Algorithm 3), tuned via --heuristic-theta.")
+    parser.add_argument('--heuristic-theta', type=float, default=0.6,
+                        help="Threshold for the DiversityClusterDB heuristic routing "
+                             "(between 0 and 1). Lower = more conservative load balancing.")
     args = parser.parse_args()
     
     replicas_config = parse_replicas_csv(args.config)
@@ -86,8 +89,9 @@ if __name__ == '__main__':
         metrics_file = f"{base}_seed_{args.seed}{ext}"
 
     servicer = QDinaServerServicer(n_replicas=num_replicas, n_templates=22, batch_size=64,
-                                   metrics_file=metrics_file, param_layers=args.param_layers, 
-                                   steps_per_episode=steps_per_episode, router_mode=args.router_mode)
+                                   metrics_file=metrics_file, param_layers=args.param_layers,
+                                   steps_per_episode=steps_per_episode, router_mode=args.router_mode,
+                                   heuristic_theta=args.heuristic_theta)
     if hasattr(workload_mgr, 'update_templates'):
         servicer.set_update_templates(workload_mgr.update_templates())
 
