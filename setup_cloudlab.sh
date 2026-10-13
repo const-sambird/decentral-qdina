@@ -135,6 +135,6 @@ MSG
         tmux send-keys -t qdina "source venv/bin/activate" C-m
     fi
 
-    echo "Starting Agent Node ${NODE_ID} connecting to Router at 10.10.1.1:50051..."
-    tmux send-keys -t qdina "python3 -m agent.main_agent --id ${NODE_ID} --mode classical --server 10.10.1.1:50051 --config replicas-cloudlab.csv --budget-mode ignore --storage-budget ${BUDGET}" C-m
+    echo "Starting Agent Node ${NODE_ID} connecting to Router at 10.10.1.1:50051 (router_mode=${ROUTER_MODE})..."
+    tmux send-keys -t qdina "python3 -m agent.main_agent --id ${NODE_ID} --mode classical --server 10.10.1.1:50051 --config replicas-cloudlab.csv --budget-mode ignore --storage-budget ${BUDGET} --router-mode ${ROUTER_MODE}" C-m
 fi

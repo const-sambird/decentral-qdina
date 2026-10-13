@@ -74,10 +74,12 @@ pc.defineParameter(
         ("static",    "Static (no routing changes) - ablation"),
         ("heuristic", "Heuristic (DiversityClusterDB) - ablation"),
     ],
-    longDescription="Select the routing strategy: "
+    longDescription="Select the routing strategy used by both the router and the workers. "
                     "'learned' uses the DQN router (default), "
                     "'static' disables routing entirely (ablation study), "
-                    "'heuristic' uses the DiversityClusterDB heuristic (ablation study)."
+                    "'heuristic' uses the DiversityClusterDB heuristic (ablation study). "
+                    "The same value is forwarded to every worker so its cost-estimation "
+                    "throttling matches the router's behaviour."
 )
 
 params = pc.bindParameters()
@@ -129,9 +131,11 @@ for i in range(1, params.workerCount + 1):
     iface_worker.addAddress(pg.IPv4Address(worker_ip, "255.255.255.0"))
     lan.addInterface(iface_worker)
 
-    # Arguments: role, worker_count, scale_factor, storage_budget, node_id
-    worker_cmd = "sudo rm -rf /decentral-qdina && sudo git clone https://github.com/const-sambird/decentral-qdina.git /decentral-qdina && sudo bash /decentral-qdina/setup_cloudlab.sh worker {0} {1} {2} {3}".format(
-        params.workerCount, params.scaleFactor, STORAGE_BUDGET, i
+    # Arguments: role, worker_count, scale_factor, storage_budget, node_id, episodes, seed, router_mode
+    # The router_mode is forwarded to every worker so its cost-estimation throttling
+    # matches the router's behaviour (static -> 1 measure per N steps, learned -> 1 per 3, heuristic -> every step).
+    worker_cmd = "sudo rm -rf /decentral-qdina && sudo git clone https://github.com/const-sambird/decentral-qdina.git /decentral-qdina && sudo bash /decentral-qdina/setup_cloudlab.sh worker {0} {1} {2} {3} {4} {5} {6}".format(
+        params.workerCount, params.scaleFactor, STORAGE_BUDGET, i, params.episodes, params.seed, params.routerMode
     )
     worker.addService(pg.Execute(shell="sh", command=worker_cmd))
 
