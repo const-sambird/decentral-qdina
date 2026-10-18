@@ -54,6 +54,9 @@ class QDinaNetworkClient:
         self.n_candidates = 0
         self.candidates = []
         self.templates_map = []
+        
+        # Mapping from query text to original template ID
+        self.query_to_template = {}
 
         self.policy_net = None
         self.target_net = None
@@ -248,6 +251,11 @@ class QDinaNetworkClient:
 
         from common.query_loader import load_training_set_queries
         queries, templates = load_training_set_queries('./workload_output/', fraction=1.0)
+        
+        # Build a mapping from query text to its original template ID.
+        # This fixes the mismatch where the router uses original template IDs
+        # but the worker previously used a hash of the query text.
+        self.query_to_template = {q: t for q, t in zip(queries, templates)}
 
         self.candidates = self._generate_candidates(queries, templates)
         self.n_candidates = len(self.candidates)
@@ -285,8 +293,6 @@ class QDinaNetworkClient:
 
                 current_queries = list(response.queries)
                 
-                # FIX: If no queries are assigned, do NOT force a full estimation.
-                # Just report the last known costs (or zeros) and move on.
                 if not current_queries:
                     print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node. Reporting idle state.")
                     if self.router_mode == 'heuristic':
@@ -304,7 +310,9 @@ class QDinaNetworkClient:
                     self.param_layers = response.param_layers
 
                 print(f"[Worker Client {self.replica_id}] Sliced workload received containing {len(current_queries)} active queries.")
-                dynamic_templates_map = [hash(q_text) % self.n_templates for q_text in current_queries]
+                
+                # Use the original template IDs instead of a hash
+                dynamic_templates_map = [self.query_to_template.get(q, 0) for q in current_queries]
                 self.env.templates = dynamic_templates_map
 
                 action = self._select_action(local_state)
@@ -348,8 +356,6 @@ class QDinaNetworkClient:
 
                 current_storage_usage = info.get('storage', 0.0)
 
-                # FIX: For static and learned, we use the slice costs directly.
-                # For heuristic, we need the full workload costs.
                 if self.router_mode == 'heuristic':
                     costs_per_template = self.env.estimate_full_workload_costs()
                 else:
@@ -420,7 +426,6 @@ class QDinaNetworkClient:
         if self.router_mode == 'heuristic':
             costs_per_template = self.env.estimate_full_workload_costs()
         else:
-            # After reset, env.last_costs contains the costs of the full workload
             costs_per_template = self.env.last_costs
             
         current_cost_tracker = float(sum(costs_per_template))
