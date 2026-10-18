@@ -355,6 +355,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
                                 # Compute current worker loads (number of queries per worker)
                                 # based on the current routing table and the workload pool.
+                                # OPTIMIZED: Use Counter to avoid iterating over all 1100 queries.
                                 worker_loads_current = np.zeros(self.n_replicas, dtype=np.int32)
                                 template_counts = Counter(self.workload_templates_map)
                                 for t_id, count in template_counts.items():
@@ -396,7 +397,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 # Update the routing table (which replica handles each template).
                                 self.routing_table_state = np.copy(next_state[:self.env.n_templates])
                                 
-                                # For each worker, compute the list of queries they will handle next.
+                                # OPTIMIZED: Compute all slices in one pass
                                 self.next_workload_slices = self._compute_all_slices()
                                 
                                 self.last_known_metrics = self.collected_metrics.copy()
@@ -476,7 +477,10 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                            param_layers=self.param_layers)
 
     def _compute_all_slices(self):
-        """Efficiently computes workload slices for all workers in O(W + N*T)."""
+        """
+        OPTIMIZED: Efficiently computes workload slices for all workers in O(W + N*T).
+        Instead of looping over all 1100 queries for every worker, we group queries by template once.
+        """
         sorted_workers = sorted(self.registered_workers.keys())
         
         # Pre-group queries by template (O(W))
@@ -644,7 +648,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             if t in self._update_templates:
                 continue  # broadcast, handled by the slicing code
                 
-            # NEW: If no cost is known yet for this template, assign it to the least loaded replica
+            # FIX: If no cost is known yet for this template, assign it to the least loaded replica
             # to avoid forcing all queries onto replica 0.
             if not np.any(np.isfinite(matrix[t])):
                 route_to = int(np.argmin(loads))
