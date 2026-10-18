@@ -330,15 +330,11 @@ class QDinaNetworkClient:
 
                 current_queries = list(response.queries)
                 if not current_queries:
-                    print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node for the current step.")
-                    time.sleep(0.5)
-                    current_queries = list(response.queries)
-                if not current_queries:
                     print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node. Reporting idle state.")
                     # Report a cost so the master still has a valid signal.
+                    # We use the throttled version so it doesn't block the whole cluster.
                     costs_per_template = self._maybe_estimate_full_costs()
                     current_cost_tracker = float(sum(costs_per_template))
-                    time.sleep(0.2)
                     self._local_step += 1
                     continue
 
