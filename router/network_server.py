@@ -648,40 +648,44 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             if t in self._update_templates:
                 continue  # broadcast, handled by the slicing code
                 
-            # FIX: If no cost is known yet for this template, assign it to the least loaded replica
-            # to avoid forcing all queries onto replica 0.
+            # If no cost is known yet for this template, assign it to the least loaded replica
             if not np.any(np.isfinite(matrix[t])):
                 route_to = int(np.argmin(loads))
                 chosen[t] = route_to
                 loads[route_to] += freq[t]
                 continue
 
+            # Algorithm 3:
+            # 1. Let {i_1, ..., i_n} be a permutation of instance ids such that
+            #    cost(q, c_{i_1}) <= cost(q, c_{i_2}) ... <= cost(q, c_{i_n})
             order = np.argsort(matrix[t])
-            route_to = int(order[0])
 
+            # 2. i = i_1
+            route_to = int(order[0])
+            best_fit_idx = int(order[0])
+
+            # 3. for j in [2, n] do
             for i_r in order[1:]:
                 i_r = int(i_r)
+                
                 if not np.isfinite(matrix[t, i_r]):
                     break
+
+                # 4. if cost(q, c_{i_j}) < cost(q, empty) then
                 if matrix[t, i_r] < baseline[t]:
-                    # Paper semantics: if the best-fit replica has no load yet,
-                    # keep it (nothing to rebalance against).
-                    if loads[order[0]] == 0:
-                        continue
-                    if (loads[i_r] / loads[order[0]]) < threshold:
+                    # 5. if l_{i_j} / l_{i_1} < theta then
+                    # Note: we use a small epsilon to avoid division by zero if best_fit_idx has no load.
+                    if loads[best_fit_idx] > 0 and (loads[i_r] / loads[best_fit_idx]) < threshold:
+                        # 6. i = i_j
                         route_to = i_r
 
+            # 10. Route the query q to the replica r_i
             chosen[t] = route_to
+            # Update load using the cost of the query multiplied by frequency.
             if np.isfinite(matrix[t, route_to]):
                 loads[route_to] += freq[t] * matrix[t, route_to]
             else:
                 loads[route_to] += freq[t]
-
-        # Fallback: templates with no cost anywhere go to the least-loaded replica.
-        min_replica = int(np.argmin(loads))
-        for t in range(self.n_templates):
-            if not np.any(np.isfinite(matrix[t])):
-                chosen[t] = min_replica
 
         return chosen
 
