@@ -21,6 +21,7 @@ from agent.database import Replica
 from common.preprocessor import Preprocessor
 from common.profiling import Profiler
 
+
 class QDinaNetworkClient:
     def __init__(self, replica_id: int, server_address: str, agent_mode: str,
                  db_host: str, db_port: int, db_user: str, db_password: str,
@@ -54,7 +55,7 @@ class QDinaNetworkClient:
         self.n_candidates = 0
         self.candidates = []
         self.templates_map = []
-        
+
         # Mapping from query text to original template ID
         self.query_to_template = {}
 
@@ -75,9 +76,15 @@ class QDinaNetworkClient:
         self.target_update_freq = 10
         self.param_layers = 5
 
+        # Cache for idle-state full costs (avoids recomputing in the busy loop).
+        self._idle_cost_cache = None
+
         print(f"[Worker Client {self.replica_id}] Full cost recompute enabled: "
               f"{'yes' if self.router_mode == 'heuristic' else 'no'} "
               f"(router mode: {self.router_mode}).")
+        if self.router_mode not in ('learned', 'static', 'heuristic'):
+            print(f"[Worker Client {self.replica_id}] WARNING: unknown router_mode "
+                  f"'{self.router_mode}'. Defaulting to slice-cost reporting.")
 
     def register_to_master(self, local_hostname: str = '127.0.0.1', local_port: int = 5432):
         """Register this worker node with the master router via gRPC.
@@ -235,6 +242,16 @@ class QDinaNetworkClient:
 
             self.optimizer.step(closure)
 
+    def _costs_for_router(self, info):
+        """Return the cost vector to report to the router, depending on router_mode.
+
+        - heuristic: full workload costs (router needs them for diversity routing).
+        - learned/static: slice costs from the last step (router tolerates sparse matrices).
+        """
+        if self.router_mode == 'heuristic':
+            return self.env.estimate_full_workload_costs()
+        return info.get('costs', [0.0] * self.n_templates)
+
     def run_training(self):
         """Main training loop for the local reinforcement learning agent.
         """
@@ -251,7 +268,7 @@ class QDinaNetworkClient:
 
         from common.query_loader import load_training_set_queries
         queries, templates = load_training_set_queries('./workload_output/', fraction=1.0)
-        
+
         # Build a mapping from query text to its original template ID.
         # This fixes the mismatch where the router uses original template IDs
         # but the worker previously used a hash of the query text.
@@ -292,16 +309,27 @@ class QDinaNetworkClient:
                     response, local_state, current_cost_tracker, current_storage_usage, costs_per_template = self._handle_stop_training()
 
                 current_queries = list(response.queries)
-                
+
                 if not current_queries:
-                    print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node. Reporting idle state.")
+                    # ------------------------------------------------------------------
+                    # FIX: avoid busy-spinning. In heuristic mode, cache the full-cost
+                    # computation so we don't spam the DB with 1100-query EXPLAINs on
+                    # every idle iteration.
+                    # ------------------------------------------------------------------
+                    print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned "
+                          f"to this node. Reporting idle state.")
                     if self.router_mode == 'heuristic':
-                        costs_per_template = self.env.estimate_full_workload_costs()
+                        if self._idle_cost_cache is None:
+                            self._idle_cost_cache = self.env.estimate_full_workload_costs()
+                        costs_per_template = self._idle_cost_cache
                     else:
                         costs_per_template = [0.0] * self.n_templates
-                    
                     current_cost_tracker = float(sum(costs_per_template))
+                    time.sleep(0.1)  # FIX: avoid busy loop
                     continue
+
+                # Real slice arrived: clear the idle cache.
+                self._idle_cost_cache = None
 
                 if response.epsilon is not None:
                     self.epsilon = response.epsilon
@@ -309,8 +337,9 @@ class QDinaNetworkClient:
                 if response.param_layers is not None:
                     self.param_layers = response.param_layers
 
-                print(f"[Worker Client {self.replica_id}] Sliced workload received containing {len(current_queries)} active queries.")
-                
+                print(f"[Worker Client {self.replica_id}] Sliced workload received containing "
+                      f"{len(current_queries)} active queries.")
+
                 # Use the original template IDs instead of a hash
                 dynamic_templates_map = [self.query_to_template.get(q, 0) for q in current_queries]
                 self.env.templates = dynamic_templates_map
@@ -325,7 +354,7 @@ class QDinaNetworkClient:
                         costs_per_template = self.env.estimate_full_workload_costs()
                     else:
                         costs_per_template = info.get('costs', [0.0] * self.n_templates)
-                    
+
                     current_cost_tracker = float(sum(costs_per_template))
                     current_storage_usage = info.get('storage', 0.0)
                     active_indexes = self.env.get_active_index_names()
@@ -355,19 +384,18 @@ class QDinaNetworkClient:
                 self._optimize_local_model()
 
                 current_storage_usage = info.get('storage', 0.0)
-
-                if self.router_mode == 'heuristic':
-                    costs_per_template = self.env.estimate_full_workload_costs()
-                else:
-                    costs_per_template = info.get('costs', [0.0] * self.n_templates)
-                
+                costs_per_template = self._costs_for_router(info)
                 current_cost_tracker = float(sum(costs_per_template))
 
                 storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
-                print(f"[Worker Client {self.replica_id}] Local Step Finished. Total Sliced Cost: {current_cost_tracker:.1f} | Reward {reward:.1f} | Storage: {storage_str} | Epsilon: {self.epsilon:.3f}")
+                print(f"[Worker Client {self.replica_id}] Local Step Finished. "
+                      f"Total Sliced Cost: {current_cost_tracker:.1f} | "
+                      f"Reward {reward:.1f} | Storage: {storage_str} | "
+                      f"Epsilon: {self.epsilon:.3f}")
 
             except grpc.RpcError as e:
-                print(f"[Worker Client {self.replica_id}] Connection lost with master router. Retrying in 5 seconds... ({e.code()})")
+                print(f"[Worker Client {self.replica_id}] Connection lost with master router. "
+                      f"Retrying in 5 seconds... ({e.code()})")
                 time.sleep(5.0)
 
     def _generate_candidates(self, queries: list[str], templates: list[int]) -> list[tuple[str, tuple[str, ...]]]:
@@ -412,22 +440,24 @@ class QDinaNetworkClient:
             tuple: (response, local_state, current_cost_tracker, current_storage_usage, costs_per_template)
         """
         print(f"[Worker Client {self.replica_id}] Master broadcasted stop_training signal. "
-            f"Resetting local environment and acknowledging...")
+              f"Resetting local environment and acknowledging...")
 
         knapsack_indexes = self.env.get_knapsack_selection()
         active_indexes = [f"{table}_{'_'.join(cols)}" for table, cols in knapsack_indexes]
-        print(f"[Worker {self.replica_id}] Knapsack selected {len(knapsack_indexes)} indexes within {self.storage_budget/1e9:.1f} GB budget.")
+        print(f"[Worker {self.replica_id}] Knapsack selected {len(knapsack_indexes)} indexes "
+              f"within {self.storage_budget/1e9:.1f} GB budget.")
 
         local_state, _ = self.env.reset()
         self.episode_step_count = 0
+        self._idle_cost_cache = None  # reset idle cache on episode boundary
         current_cost_tracker = 0.0
         current_storage_usage = 0.0
 
         if self.router_mode == 'heuristic':
             costs_per_template = self.env.estimate_full_workload_costs()
         else:
-            costs_per_template = self.env.last_costs
-            
+            costs_per_template = list(self.env.last_costs)
+
         current_cost_tracker = float(sum(costs_per_template))
 
         ack_metrics = qdina_pb2.LocalMetrics(
