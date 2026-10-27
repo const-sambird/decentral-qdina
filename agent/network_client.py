@@ -30,15 +30,9 @@ class QDinaNetworkClient:
         '''
         Decentralized gRPC Client worker orchestrating local reinforcement learning indexing.
 
-        :param router_mode: tells the worker how to compute the costs it reports
-            to the master:
-              - 'heuristic' -> full-workload costs every step (the diversity
-                               routing algorithm needs a dense cost matrix)
-              - 'static'    -> slice costs (the router never moves queries, so
-                               slice costs are equivalent to full costs for
-                               makespan computation but ∞ cheaper)
-              - 'learned'   -> slice costs (the DQN only needs the cost of the
-                               template that actually goes to each worker)
+        NOTE on `router_mode`: it is accepted for CLI compatibility with `main_agent.py`
+        and `main_router.py`, but it does NOT change the cost-reporting strategy anymore.
+        We ALWAYS report full-workload costs (see `_costs_for_router`).
         '''
         self.replica_id = replica_id
         self.agent_mode = agent_mode.lower()
@@ -77,13 +71,12 @@ class QDinaNetworkClient:
         self.target_update_freq = 10
         self.param_layers = 5
 
-        # Cached full-workload costs, used to avoid spamming the DB during
-        # the idle loop (when the worker has no queries assigned).
+        # Cache for full-workload costs while the worker is idle (no slice).
+        # Invalidated as soon as a real slice is received.
         self._idle_cost_cache = None
 
-        print(f"[Worker Client {self.replica_id}] Cost reporting: "
-              f"{'full workload (every step)' if self.router_mode == 'heuristic' else 'slice costs'} "
-              f"(router mode: {self.router_mode}).")
+        print(f"[Worker Client {self.replica_id}] Cost reporting: full workload "
+              f"(router_mode CLI: {self.router_mode}).")
 
     def register_to_master(self, local_hostname: str = '127.0.0.1', local_port: int = 5432):
         """Register this worker node with the master router via gRPC.
@@ -244,16 +237,26 @@ class QDinaNetworkClient:
     def _costs_for_router(self, info):
         """Return the per-template cost vector to report to the master.
 
-        - heuristic: full-workload cost (the master's diversity routing needs
-          a dense cost matrix).
-        - static/learned: slice costs (each worker only reports the cost of the
-          templates it was actually assigned; the routed template cost is
-          identical to its full-workload cost, so makespan computation stays
-          correct — but 10-100× cheaper).
+        We ALWAYS report the full-workload costs, matching the original working
+        implementation. Using slice costs (as in a previous attempt) breaks the
+        makespan for three reasons:
+
+          1. The local DQN uses `hash(query) % n_templates` for its own template
+             map (see `run_training`). That hash-based map does NOT correspond
+             to the master's real template IDs, so slice costs are indexed
+             under the WRONG templates. The master then computes makespan by
+             reading `cost_source[real_template, assigned_worker]`, which
+             silently mixes different templates together.
+
+          2. Slice costs underestimate the workload: each worker only reports
+             the cost of its own slice, whereas the master expects the cost of
+             the full workload on the assigned worker (DINA-style). The
+             resulting makespan is meaningless.
+
+          3. In mode 'learned', the router DQN needs to evaluate counterfactual
+             routings — slice costs cannot support that.
         """
-        if self.router_mode == 'heuristic':
-            return self.env.estimate_full_workload_costs()
-        return info.get('costs', [0.0] * self.n_templates)
+        return self.env.estimate_full_workload_costs()
 
     def run_training(self):
         """Main training loop for the local reinforcement learning agent.
@@ -316,20 +319,17 @@ class QDinaNetworkClient:
                     print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node. Reporting idle state.")
 
                     # ------------------------------------------------------------------
-                    # Idle path: in heuristic mode, cache the full-workload cost so
-                    # we don't spam the DB with 1100-query EXPLAINs on every iteration
-                    # of the idle loop. In static/learned modes, keep the last slice
-                    # costs (matches the original working version, which simply
-                    # re-sent the last known costs).
+                    # Idle path: the worker's index configuration cannot change while
+                    # it is idle, so the full-workload costs are unchanged. We cache
+                    # them to avoid re-running the (expensive) full-workload
+                    # estimation on every idle loop iteration.
                     # ------------------------------------------------------------------
-                    if self.router_mode == 'heuristic':
-                        if self._idle_cost_cache is None:
-                            self._idle_cost_cache = self.env.estimate_full_workload_costs()
-                        costs_per_template = self._idle_cost_cache
-                    # else: keep the previous costs_per_template unchanged.
+                    if self._idle_cost_cache is None:
+                        self._idle_cost_cache = self.env.estimate_full_workload_costs()
+                    costs_per_template = self._idle_cost_cache
                     current_cost_tracker = float(sum(costs_per_template))
 
-                    # Avoid the busy-spin that was introduced in the broken version.
+                    # Avoid the busy-spin.
                     time.sleep(0.2)
                     continue
 
@@ -352,7 +352,6 @@ class QDinaNetworkClient:
                 if terminated:
                     print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
 
-                    # Use the same cost-reporting policy as the normal path.
                     costs_per_template = self._costs_for_router(info)
                     current_cost_tracker = float(sum(costs_per_template))
                     current_storage_usage = info.get('storage', 0.0)
@@ -384,9 +383,7 @@ class QDinaNetworkClient:
 
                 current_storage_usage = info.get('storage', 0.0)
 
-                # The ONLY behavioural change vs. the original working version:
-                # use self._costs_for_router(info) instead of always calling
-                # self.env.estimate_full_workload_costs().
+                # Report the full-workload costs to the master (DINA-style).
                 costs_per_template = self._costs_for_router(info)
                 current_cost_tracker = float(sum(costs_per_template))
 
@@ -451,10 +448,7 @@ class QDinaNetworkClient:
         current_cost_tracker = 0.0
         current_storage_usage = 0.0
 
-        # Keep the same behaviour as the working version: compute fresh full-workload
-        # costs at reset. The master's local_reset branch ignores these values and
-        # re-uses the last valid costs from the previous episode (this matches the
-        # original working behaviour — do not change without re-benchmarking).
+        # Fresh full-workload costs at reset (matching the working version).
         costs_per_template = self.env.estimate_full_workload_costs()
         current_cost_tracker = float(sum(costs_per_template))
 
