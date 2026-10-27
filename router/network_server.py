@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import csv
 import os
-from collections import Counter
 
 from protos import qdina_pb2
 from protos import qdina_pb2_grpc
@@ -27,7 +26,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.n_replicas = n_replicas
         self.steps_per_episode = steps_per_episode
         self.router_mode = router_mode
-        # Threshold for DiversityClusterDB's benefit-first load-aware routing.
         self.heuristic_theta = heuristic_theta
 
         self.env = GlobalRoutingEnv(n_templates=n_templates, n_replicas=n_replicas)
@@ -55,7 +53,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
         self.router_memory = ReplayMemory(capacity=50000)
 
-        # Threading primitives for synchronization
         self.lock = threading.Condition()
         self.workers_waiting_count = 0
         self.global_step_counter = 0
@@ -74,10 +71,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         self.worker_workload_versions = {}
         self.step_computed = False
 
-        # For tracking episode reset acknowledgments
         self.episode_reset_acks = set()
 
-        # For storing the last valid costs per worker (used after local reset)
         self.last_valid_total_cost = {}
         self.last_valid_template_costs = {}
 
@@ -86,13 +81,8 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
         self.knapsack_metrics = {}
 
-        # Cache of last known non-zero cost per (template, replica).
-        # Workers report 0 for templates they didn't receive, which would
-        # otherwise poison `argmin` and make the routing table oscillate.
         self._last_known_cost_matrix = np.zeros((n_templates, n_replicas), dtype=np.float64)
 
-        # Templates containing INSERT/UPDATE/DELETE; routed to every replica
-        # (DINA's sentinel `routes[template] = -1` behaviour).
         self._update_templates = set()
 
         self.metrics_file = None
@@ -211,7 +201,10 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                             self.lock.wait()
 
                         self.reset_complete = False
-                        self.next_workload_slices = self._compute_all_slices()
+                        self.next_workload_slices = {
+                            w_id: self._get_routed_slice_for_node(w_id)
+                            for w_id in self.registered_workers.keys()
+                        }
                         print(f"[DEBUG] Next slices sizes: "
                               f"{ {w: len(self.next_workload_slices.get(w, [])) for w in self.registered_workers} }")
                         return qdina_pb2.WorkloadSlice(
@@ -225,7 +218,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                                        epsilon=self.epsilon,
                                                        param_layers=self.param_layers)
 
-                # Store the metrics that this worker sent for the current step.
                 if request.local_reset:
                     total_cost = self.last_valid_total_cost.get(worker_id, 0.0)
                     costs = self.last_valid_template_costs.get(worker_id, [0.0] * self.n_templates)
@@ -322,21 +314,27 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
                                 costs_array = routed_costs
 
-                                # Compute current worker loads using Counter.
                                 worker_loads_current = np.zeros(self.n_replicas, dtype=np.int32)
-                                template_counts = Counter(self.workload_templates_map)
-                                for t_id, count in template_counts.items():
+                                for idx, q_text in enumerate(self.current_workload_pool):
+                                    template_id = self.workload_templates_map[idx]
                                     try:
-                                        t_id = int(t_id)
+                                        template_id = int(template_id)
                                     except (TypeError, ValueError):
-                                        continue
-                                    if 0 <= t_id < self.n_templates:
-                                        if t_id in self._update_templates:
-                                            worker_loads_current += count
+                                        template_id = -1
+                                    if 0 <= template_id < self.n_templates:
+                                        if isinstance(self.routing_table_state, np.ndarray) and \
+                                                len(self.routing_table_state) > template_id:
+                                            worker_id_assigned = int(self.routing_table_state[template_id])
+                                            if 0 <= worker_id_assigned < self.n_replicas:
+                                                worker_loads_current[worker_id_assigned] += 1
+                                            else:
+                                                print(f"[WARNING] Invalid worker id {worker_id_assigned} "
+                                                      f"for template {template_id}")
                                         else:
-                                            assigned_node = int(self.routing_table_state[t_id])
-                                            if 0 <= assigned_node < self.n_replicas:
-                                                worker_loads_current[assigned_node] += count
+                                            print(f"[WARNING] Routing table invalid for template {template_id}")
+                                    else:
+                                        print(f"[WARNING] Template id {template_id} out of range "
+                                              f"(0-{self.n_templates - 1})")
 
                                 next_state, reward, _, _, info = self.env.step(
                                     action,
@@ -360,9 +358,11 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                     ])
                                     self.metrics_file.flush()
 
-                                # Update the routing table (which replica handles each template).
                                 self.routing_table_state = np.copy(next_state[:self.env.n_templates])
-                                self.next_workload_slices = self._compute_all_slices()
+                                self.next_workload_slices = {
+                                    w_id: self._get_routed_slice_for_node(w_id)
+                                    for w_id in self.registered_workers.keys()
+                                }
                                 self.last_known_metrics = self.collected_metrics.copy()
 
                                 table_str = " ".join(str(int(node)) for node in self.routing_table_state)
@@ -381,12 +381,16 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                     self.agent.learn(self.router_memory, self.batch_size)
                                     self.agent.soft_update()
 
-                                # Last step: signal stop, clear slices.
                                 if self.global_step_counter == self.steps_per_episode - 1:
                                     self.stop_training_signal = True
                                     self.global_step_counter += 1
                                     self.next_workload_slices = {}
                                 else:
+                                    self.routing_table_state = np.copy(next_state[:self.env.n_templates])
+                                    self.next_workload_slices = {
+                                        w_id: self._get_routed_slice_for_node(w_id)
+                                        for w_id in self.registered_workers.keys()
+                                    }
                                     self.global_step_counter += 1
 
                                 self.collected_metrics.clear()
@@ -396,7 +400,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
                             except Exception as e:
                                 print(f"[CRITICAL] Leader computation error: {e}")
-                                import traceback; traceback.print_exc()
                                 self.step_computed = False
                                 self.lock.notify_all()
                                 self.stop_training_signal = True
@@ -422,39 +425,9 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
         except Exception as e:
             print(f"[CRITICAL] Unhandled error in SubmitMetricsAndGetWorkload: {e}")
-            import traceback; traceback.print_exc()
             return qdina_pb2.WorkloadSlice(stop_training=False, queries=[],
                                            epsilon=self.epsilon,
                                            param_layers=self.param_layers)
-
-    def _compute_all_slices(self):
-        """
-        Compute workload slices for all workers while **preserving the workload order**
-        (this matches the behaviour of the original `_get_routed_slice_for_node`, which
-        iterated `current_workload_pool` in order).
-        """
-        sorted_workers = sorted(self.registered_workers.keys())
-        slices = {w_id: [] for w_id in sorted_workers}
-
-        for idx, q_text in enumerate(self.current_workload_pool):
-            try:
-                t_id = int(self.workload_templates_map[idx])
-            except (TypeError, ValueError, IndexError):
-                continue
-            if not (0 <= t_id < self.n_templates):
-                continue
-
-            if t_id in self._update_templates:
-                # Broadcast to every worker.
-                for w_id in sorted_workers:
-                    slices[w_id].append(q_text)
-            else:
-                internal_id = int(self.routing_table_state[t_id])
-                if 0 <= internal_id < len(sorted_workers):
-                    w_id = sorted_workers[internal_id]
-                    slices[w_id].append(q_text)
-
-        return slices
 
     def _get_routed_slice_for_node(self, node_id):
         """Compute the list of queries to be routed to a specific worker node.
@@ -525,7 +498,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         '''
         n_r = len(sorted_workers)
 
-        # Build the cost matrix from the last-known non-zero costs.
         matrix = np.full((self.n_templates, n_r), np.inf, dtype=np.float64)
         for r_idx, w_id in enumerate(sorted_workers):
             if w_id not in self.collected_metrics:
@@ -540,16 +512,12 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     if prev > 0.0:
                         matrix[t, r_idx] = prev
 
-        # Persist the best-known non-zero costs for the next step.
         finite_mask = np.isfinite(matrix)
         self._last_known_cost_matrix = np.where(finite_mask, matrix, self._last_known_cost_matrix)
 
-        # Cold start: nothing to base a decision on yet -> keep the current table.
         if not np.any(finite_mask):
             return self.routing_table_state.copy()
 
-        # Baseline per template: true no-index cost if available, else
-        # highest observed cost across replicas (documented proxy).
         no_index = getattr(self, '_no_index_costs', None)
         if no_index is not None:
             baseline = np.asarray(no_index, dtype=np.float64)
@@ -560,7 +528,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             safe = np.where(finite_mask, matrix, 0.0)
             baseline = np.max(safe, axis=1)
 
-        # Template frequency in the current pool (used as a weight).
         freq = np.zeros(self.n_templates, dtype=np.float64)
         for t in self.workload_templates_map:
             try:
@@ -573,7 +540,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         loads = np.zeros(n_r, dtype=np.float64)
         chosen = self.routing_table_state.copy()
 
-        # Iterate in workload order (first appearance of each template).
         order_t = []
         seen = set()
         for t in self.workload_templates_map:
@@ -610,7 +576,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             if np.isfinite(matrix[t, route_to]):
                 loads[route_to] += freq[t] * matrix[t, route_to]
 
-        # Fallback: templates with no cost anywhere go to the least-loaded replica.
         min_replica = int(np.argmin(loads))
         for t in range(self.n_templates):
             if not np.any(np.isfinite(matrix[t])):
