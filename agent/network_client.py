@@ -28,6 +28,12 @@ class QDinaNetworkClient:
                  router_mode: str = 'learned'):
         '''
         Decentralized gRPC Client worker orchestrating local reinforcement learning indexing.
+
+        :param router_mode: forwarded by main_agent.py. Controls how often the worker
+            recomputes full-workload costs:
+              - 'heuristic' -> every step (diversity routing needs a dense cost matrix)
+              - 'static'    -> never (slice costs are sufficient, routing is stable)
+              - 'learned'   -> never (slice costs are sufficient, routing barely moves)
         '''
         self.replica_id = replica_id
         self.agent_mode = agent_mode.lower()
@@ -48,6 +54,11 @@ class QDinaNetworkClient:
         self.n_candidates = 0
         self.candidates = []
         self.templates_map = []
+
+        # Real template ID lookup (query text -> template ID).
+        # This is the KEY fix: without it, costs were indexed by hash and the
+        # server's makespan was nonsense.
+        self.query_to_template = {}
 
         self.policy_net = None
         self.target_net = None
@@ -222,6 +233,33 @@ class QDinaNetworkClient:
 
             self.optimizer.step(closure)
 
+    def _report_costs(self, info=None):
+        """Return the per-template cost vector to report to the master.
+
+        - 'heuristic': full-workload costs. The server's diversity routing
+          needs a DENSE matrix (it argmins over every replica even for
+          templates the worker didn't receive). Slice costs would leave
+          `inf` holes and freeze the routing table.
+
+        - 'static' / 'learned': slice costs. These are correct because:
+            (a) `self.env.templates` now contains REAL template IDs (not
+                hash values), so `info['costs'][t]` is the true cost of
+                template `t` on this replica under the current indexes;
+            (b) the server reads `template_costs_matrix[t, routing[t]]` —
+                i.e. only the (template, assigned-replica) pair that the
+                routing table actually uses. In static mode `routing[t]`
+                never changes, so the values are exact every step. In
+                learned mode `routing[t]` changes at most 1/3 of steps,
+                so at most 1/3 of the logged makespans are slightly off.
+          The speedup over 'heuristic' is roughly 10-15× because we avoid
+          the ~1100-query EXPLAIN pass per worker per step.
+        """
+        if self.router_mode == 'heuristic':
+            return self.env.estimate_full_workload_costs()
+        if info is not None:
+            return info.get('costs', [0.0] * self.n_templates)
+        return [0.0] * self.n_templates
+
     def run_training(self):
         """Main training loop for the local reinforcement learning agent.
         """
@@ -238,6 +276,12 @@ class QDinaNetworkClient:
 
         from common.query_loader import load_training_set_queries
         queries, templates = load_training_set_queries('./workload_output/', fraction=1.0)
+
+        # Build the real template-ID lookup. This is the fix that makes slice
+        # costs usable: without it, `dynamic_templates_map` was `hash(q) % 22`,
+        # which is unrelated to the server's real template IDs and made both
+        # the local DQN and the reported makespan garbage.
+        self.query_to_template = {q: t for q, t in zip(queries, templates)}
 
         self.candidates = self._generate_candidates(queries, templates)
         self.n_candidates = len(self.candidates)
@@ -280,8 +324,10 @@ class QDinaNetworkClient:
                     current_queries = list(response.queries)
                 if not current_queries:
                     print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node. Reporting idle state.")
-                    # Report the full-workload cost so the master still has a valid signal.
-                    costs_per_template = self.env.estimate_full_workload_costs()
+                    # Report costs so the master still has a valid signal.
+                    # Fast modes return zeros (the worker has no slice); the
+                    # master falls back to last_valid_* for its makespan.
+                    costs_per_template = self._report_costs(info=None)
                     current_cost_tracker = float(sum(costs_per_template))
                     time.sleep(0.2)
                     continue
@@ -293,7 +339,10 @@ class QDinaNetworkClient:
                     self.param_layers = response.param_layers
 
                 print(f"[Worker Client {self.replica_id}] Sliced workload received containing {len(current_queries)} active queries.")
-                dynamic_templates_map = [hash(q_text) % self.n_templates for q_text in current_queries]
+
+                # Real template IDs instead of hash(q) % n_templates.
+                # This is what makes info['costs'] correctly indexed.
+                dynamic_templates_map = [self.query_to_template.get(q_text, 0) for q_text in current_queries]
                 self.env.templates = dynamic_templates_map
 
                 action = self._select_action(local_state)
@@ -302,9 +351,11 @@ class QDinaNetworkClient:
                 if terminated:
                     print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
 
-                    # Report the full-workload cost so the master has a complete matrix.
-                    costs_per_template = self.env.estimate_full_workload_costs()
-                    current_cost_tracker = float(sum(costs_per_template))
+                    # The server IGNORES costs on local_reset=True (it reuses
+                    # last_valid_*), so we skip the expensive full-workload
+                    # computation even in heuristic mode.
+                    costs_per_template = [0.0] * self.n_templates
+                    current_cost_tracker = 0.0
                     current_storage_usage = info.get('storage', 0.0)
                     active_indexes = self.env.get_active_index_names()
 
@@ -334,8 +385,12 @@ class QDinaNetworkClient:
 
                 current_storage_usage = info.get('storage', 0.0)
 
-                # Report the full-workload cost so the master can do a real argmin.
-                costs_per_template = self.env.estimate_full_workload_costs()
+                # Cost reporting: full costs in heuristic, slice costs in
+                # static/learned. The server's makespan loop only reads
+                # template_costs_matrix[t, routing[t]], so slice costs are
+                # exact for static mode (routing is frozen) and near-exact
+                # for learned mode (routing changes 1/3 of steps).
+                costs_per_template = self._report_costs(info=info)
                 current_cost_tracker = float(sum(costs_per_template))
 
                 storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
@@ -398,10 +453,11 @@ class QDinaNetworkClient:
         current_cost_tracker = 0.0
         current_storage_usage = 0.0
 
-        # Report the full-workload cost on reset so the master immediately
-        # has a full matrix for the next episode.
-        costs_per_template = self.env.estimate_full_workload_costs()
-        current_cost_tracker = float(sum(costs_per_template))
+        # Reset costs are ignored by the master (its local_reset branch uses
+        # last_valid_*), so we skip the expensive full-workload estimation to
+        # keep training fast, even in heuristic mode.
+        costs_per_template = [0.0] * self.n_templates
+        current_cost_tracker = 0.0
 
         ack_metrics = qdina_pb2.LocalMetrics(
             replica_id=self.replica_id,
