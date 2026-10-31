@@ -101,7 +101,7 @@ if __name__ == '__main__':
     servicer.initialize_routing_table()
 
     # Start the gRPC server infrastructure
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=20))
     qdina_pb2_grpc.add_QDinaServiceServicer_to_server(servicer, server)
     server.add_insecure_port('[::]:50051')
     
