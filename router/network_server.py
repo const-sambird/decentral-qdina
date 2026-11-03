@@ -473,28 +473,18 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         '''
         DiversityClusterDB's Benefit-First Load-Aware Routing (Hang 2024, Algorithm 3).
 
-        For each template (weighted by its frequency):
-          1. Sort replicas by cost.
-          2. Default to the cheapest replica (best-fit).
-          3. Move to a sub-optimal replica only if:
-             - it provides a real benefit (cost < baseline), and
-             - its load is sufficiently lower than the best-fit replica
-               (ratio < threshold).
+        TWO-PHASE ROUTER — Phase 2 (this method):
+          Phase 1 (done by workers): each worker sends the cost of the
+                                     FULL workload (all 22 templates × ~1100
+                                     queries) on ITS OWN replica.
+          Phase 2 (this method):     for each template, find the replica with
+                                     the smallest Phase-1 cost, and consider
+                                     moving the template there if load-balance
+                                     benefit is sufficient.
 
-        Baseline:
-          - If `self._no_index_costs` is set (populated from a "no-index"
-            cost report), use it directly.
-          - Otherwise, fall back to the highest observed cost across replicas
-            for that template. This is a proxy for the paper's `cost(q, empty)`.
-
-        Iteration order: templates in order of first appearance in the
-        workload pool (mirrors the paper's workload-order iteration).
-        Templates are weighted by their frequency when updating loads.
-
-        :param sorted_workers: list of worker ids in a stable order.
-        :param threshold: the paper's theta parameter (0 < threshold <= 1).
-        :returns: a (n_templates,) int32 array giving the chosen replica for
-            each template.
+        If the received cost matrix is all-zero or all-equal (step 0 before
+        any meaningful index differentiation), we keep the frequency-based
+        initial routing table instead of degrading to a single replica.
         '''
         n_r = len(sorted_workers)
 
@@ -515,7 +505,19 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         finite_mask = np.isfinite(matrix)
         self._last_known_cost_matrix = np.where(finite_mask, matrix, self._last_known_cost_matrix)
 
+        # Cold start: no finite values at all -> keep current table
         if not np.any(finite_mask):
+            print("[Router] Phase-2: cost matrix empty, keeping initial routing table.")
+            return self.routing_table_state.copy()
+
+        # Guard: all finite values are equal (step 0 with identical replicas,
+        # OR workers haven't diverged yet). Falling through to the routing
+        # logic would send everything to order[0] by tie-breaking. Keep the
+        # frequency-balanced initial table instead.
+        finite_values = matrix[finite_mask]
+        if finite_values.size > 0 and np.ptp(finite_values) == 0:
+            print(f"[Router] Phase-2: all costs equal (={finite_values[0]:.0f}); "
+                  f"keeping frequency-based initial routing table.")
             return self.routing_table_state.copy()
 
         no_index = getattr(self, '_no_index_costs', None)

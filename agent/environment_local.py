@@ -84,10 +84,24 @@ class LocalIndexingEnv(gym.Env):
     def estimate_full_workload_costs(self):
         """Estimate cost of the full workload under current indexes.
 
-        Returns a length-n_templates vector, like DINA's CostEstimator.
+        This is PHASE 1 of the two-phase heuristic router:
+          Phase 1 (this worker): compute cost of all 22 templates × all ~1100 queries
+          Phase 2 (router):      route each template to the cheapest replica
+
+        Raises RuntimeError if the workload is empty. The previous version
+        returned `last_costs` (slice costs, ~150 queries) silently — that
+        made the router's diversity routing operate on garbage data, and
+        made heuristic mode look "fast" while producing wrong makespans.
         """
         if not self._full_workload_queries:
-            return list(self.last_costs)
+            raise RuntimeError(
+                f"[Worker {self.replica_id}] estimate_full_workload_costs() called "
+                f"but `_full_workload_queries` is EMPTY. "
+                f"Heuristic mode requires env.set_full_workload() to have been "
+                f"called with a non-empty list of queries. "
+                f"Verify that `./workload_output/*.sql` exists on this worker "
+                f"(or that `./templates.txt` is present so it can be populated)."
+            )
 
         saved_templates = self.templates
         try:
@@ -98,10 +112,7 @@ class LocalIndexingEnv(gym.Env):
         return costs
 
     def _get_candidate_size(self, candidate) -> int:
-        """
-        Compute the real size (in bytes) of a candidate index using HypoPG.
-        The result is cached to avoid repeated database calls.
-        """
+        """Compute the real size (in bytes) of a candidate index using HypoPG."""
         if candidate in self._candidate_sizes:
             return self._candidate_sizes[candidate]
 
@@ -131,18 +142,7 @@ class LocalIndexingEnv(gym.Env):
             return default_size
 
     def _estimate_workload_costs(self, queries):
-        """Estimate the total cost of the current workload under the current set of active indexes.
-
-        This method clears all hypothetical indexes, creates a separate process to run
-        the CostEstimator, and returns the estimated costs per template. If the estimation
-        times out (600s), a fallback cost is returned.
-
-        Args:
-            queries (list[str]): The SQL queries to evaluate.
-
-        Returns:
-            list[float]: Estimated costs per template (length = self.n_templates).
-        """
+        """Estimate the total cost of the current workload under the current set of active indexes."""
         import time
         start_total = time.time()
 
@@ -172,19 +172,7 @@ class LocalIndexingEnv(gym.Env):
             return [100000.0] * self.n_templates
 
     def reset(self, seed=None, options=None):
-        """Reset the local environment to its initial state.
-
-        Clears all active indexes, resets storage usage, and re-estimates the cost
-        of the incoming workload (if provided via options). Also resets stagnation
-        tracking and best-configuration memory.
-
-        Args:
-            seed (int, optional): Random seed for reproducibility.
-            options (dict, optional): May contain 'queries' list for the initial workload.
-
-        Returns:
-            tuple: (observation, info) where info contains the agent mode.
-        """
+        """Reset the local environment to its initial state."""
         super().reset(seed=seed)
         self._cost_cache = {}
 
@@ -219,11 +207,7 @@ class LocalIndexingEnv(gym.Env):
         return self._get_obs(), {'agent_mode': self.agent_type}
 
     def step(self, action: int, queries=None):
-        """
-        Execute one local indexing action (add/drop) given a specific sub-workload slice.
-        If the cost does not improve significantly for `max_stagnation_steps`, all indexes are cleared.
-        Best configurations are memorized and can be restored if stagnation occurs.
-        """
+        """Execute one local indexing action (add/drop) given a specific sub-workload slice."""
         import time
         step_start = time.time()
 
@@ -458,11 +442,7 @@ class LocalIndexingEnv(gym.Env):
         }
 
     def _compute_storage_from_indexes(self):
-        """Compute the total storage space used by the currently active indexes.
-
-        Returns:
-            float: Total storage used in bytes.
-        """
+        """Compute the total storage space used by the currently active indexes."""
         total = 0.0
         for i, val in enumerate(self._current_indexes):
             if val == 1:
@@ -472,11 +452,7 @@ class LocalIndexingEnv(gym.Env):
         return total
 
     def _get_obs(self):
-        """Construct the observation vector for the reinforcement learning agent.
-
-        Returns:
-            np.ndarray: Concatenated 1D observation array.
-        """
+        """Construct the observation vector for the reinforcement learning agent."""
         costs_norm = np.log10(np.array(self.last_costs, dtype=np.float32) + 1.0)
         return np.concatenate([
             self._current_workload_state.astype(np.float32),
@@ -485,10 +461,7 @@ class LocalIndexingEnv(gym.Env):
         ])
 
     def get_action_mask(self):
-        """
-        Returns a boolean mask of size n_actions.
-        True means the action is allowed; False means it is not allowed.
-        """
+        """Returns a boolean mask of size n_actions."""
         mask = np.ones(self.n_actions, dtype=bool)
         for i in range(self.n_candidates):
             if self._current_indexes[i] == 1:
@@ -499,11 +472,7 @@ class LocalIndexingEnv(gym.Env):
         return mask
 
     def get_active_index_names(self):
-        """Generate human-readable names for all currently active indexes.
-
-        Returns:
-            list[str]: A list of index name strings.
-        """
+        """Generate human-readable names for all currently active indexes."""
         active_indexes = []
         for idx_pos, val in enumerate(self._current_indexes):
             if val == 1:
@@ -513,11 +482,7 @@ class LocalIndexingEnv(gym.Env):
         return active_indexes
 
     def get_knapsack_selection(self):
-        """Select a subset of indexes that maximizes total gain without exceeding the storage budget.
-
-        Returns:
-            list[tuple[str, tuple[str, ...]]]: List of selected index candidates.
-        """
+        """Select a subset of indexes that maximizes total gain without exceeding the storage budget."""
         from common.knapsack import select_indexes_knapsack
 
         items = []
@@ -551,11 +516,7 @@ class LocalIndexingEnv(gym.Env):
         return selected_indexes
 
     def _estimate_cost_with_indexes(self, queries, indexes):
-        """Estimate the total cost of the given queries assuming a specific set of hypothetical indexes.
-
-        Returns:
-            list[float]: Estimated costs per template (list length = self.n_templates).
-        """
+        """Estimate the total cost of the given queries assuming a specific set of hypothetical indexes."""
         if not queries:
             return [0.0] * self.n_templates
 
