@@ -29,10 +29,11 @@ class QDinaNetworkClient:
         '''
         Decentralized gRPC Client worker orchestrating local reinforcement learning indexing.
 
-        :param router_mode: forwarded by main_agent.py.
-          - 'heuristic' -> every step, compute full-workload costs (Phase 1 of two-phase routing)
-          - 'static'    -> use slice costs (cheap, routing is frozen anyway)
-          - 'learned'   -> use slice costs (cheap, routing barely moves)
+        :param router_mode: MUST match the server's --router-mode.
+            - 'heuristic': compute full-workload costs (~1100 queries) EVERY step.
+                           Slow (~10-15s/step) but REQUIRED for diversity routing.
+            - 'static' / 'learned': reuse slice costs (from info['costs']).
+                                    Fast (~1s/step) and correct for these modes.
         '''
         self.replica_id = replica_id
         self.agent_mode = agent_mode.lower()
@@ -54,9 +55,6 @@ class QDinaNetworkClient:
         self.candidates = []
         self.templates_map = []
 
-        # Real template ID lookup (query text -> template ID).
-        self.query_to_template = {}
-
         self.policy_net = None
         self.target_net = None
         self.optimizer = None
@@ -73,10 +71,6 @@ class QDinaNetworkClient:
         self._step_counter = 0
         self.target_update_freq = 10
         self.param_layers = 5
-
-        # Diagnostic counters for heuristic mode
-        self._heuristic_call_count = 0
-        self._heuristic_total_seconds = 0.0
 
     def register_to_master(self, local_hostname: str = '127.0.0.1', local_port: int = 5432):
         """Register this worker node with the master router via gRPC.
@@ -98,7 +92,10 @@ class QDinaNetworkClient:
             return False
 
     def _init_agent_networks(self):
-        """Initialize the policy and target networks and the optimizer."""
+        """
+        Initialize the policy and target networks and the optimizer.
+        Chooses between classical DQN and quantum DQN based on self.agent_mode.
+        """
         n_actions = self.env.action_space.n
         n_observations = 2 * self.n_templates + self.n_candidates
 
@@ -143,7 +140,11 @@ class QDinaNetworkClient:
             print(f"[Worker Client {self.replica_id}] Quantum DQN with {n_qubits} qubits built successfully.")
 
     def _select_action(self, state):
-        """Select an action using an epsilon-greedy policy."""
+        """Select an action using an epsilon-greedy policy.
+
+        Returns:
+            int: The chosen action index.
+        """
         if random.random() < self.epsilon:
             return random.randint(0, self.env.action_space.n - 1)
         state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
@@ -153,7 +154,8 @@ class QDinaNetworkClient:
         return action
 
     def _optimize_local_model(self):
-        """Perform one optimization step on the local DQN using the replay memory."""
+        """Perform one optimization step on the local DQN using the replay memory.
+        """
         if len(self.local_memory) < self.batch_size:
             return
 
@@ -226,71 +228,9 @@ class QDinaNetworkClient:
 
             self.optimizer.step(closure)
 
-    def _report_costs(self, info=None):
-        """Return the per-template cost vector to report to the master.
-
-        TWO-PHASE ROUTER (heuristic mode only):
-          Phase 1 (this worker): compute cost of ALL 22 templates × ALL ~1100
-                                 queries on THIS replica. This produces a dense
-                                 cost vector that the router can compare against
-                                 other replicas.
-          Phase 2 (router):      route each template to the replica with the
-                                 smallest Phase-1 cost.
-
-        In heuristic mode we MUST always compute the full-workload cost — the
-        router's diversity algorithm needs dense data to make good decisions.
-        If `_full_workload_queries` is empty (e.g., `workload_output` not
-        populated on this worker), we crash rather than silently report slice
-        costs. Silent fallback previously made heuristic look fast while
-        routing on garbage data.
-
-        In static/learned modes we use slice costs — cheap and correct
-        because:
-          - static:  routing is frozen, slice cost == full cost for the
-                     assigned replica.
-          - learned: routing changes 1/3 of steps, so ~2/3 of logged makespans
-                     are exact.
-        """
-        if self.router_mode == 'heuristic':
-            try:
-                _t0 = time.time()
-                costs = self.env.estimate_full_workload_costs()
-                _dt = time.time() - _t0
-            except RuntimeError as e:
-                print(f"[Worker Client {self.replica_id}] " + "=" * 70)
-                print(f"[Worker Client {self.replica_id}] FATAL: {e}")
-                print(f"[Worker Client {self.replica_id}]")
-                print(f"[Worker Client {self.replica_id}] Heuristic mode is ON but the workload is EMPTY")
-                print(f"[Worker Client {self.replica_id}] on this worker. The two-phase router requires")
-                print(f"[Worker Client {self.replica_id}] Phase-1 (full-workload cost) to succeed.")
-                print(f"[Worker Client {self.replica_id}]")
-                print(f"[Worker Client {self.replica_id}] FIX on this node:")
-                print(f"[Worker Client {self.replica_id}]   ls /decentral-qdina/workload_output/*.sql | wc -l   # ~1100 expected")
-                print(f"[Worker Client {self.replica_id}]   ls /decentral-qdina/templates.txt                 # should exist")
-                print(f"[Worker Client {self.replica_id}] " + "=" * 70)
-                sys.exit(1)
-
-            self._heuristic_call_count += 1
-            self._heuristic_total_seconds += _dt
-
-            # Print first call and every 10th to confirm Phase-1 is running
-            # (costs in the ~1B range, NOT ~100M slice costs).
-            if self._heuristic_call_count == 1 or self._heuristic_call_count % 10 == 0:
-                avg = self._heuristic_total_seconds / self._heuristic_call_count
-                print(f"[Worker Client {self.replica_id}] [HEURISTIC] Phase-1 full-workload "
-                      f"cost took {_dt:.2f}s (avg {avg:.2f}s, "
-                      f"{len(self.env._full_workload_queries)} queries, "
-                      f"call #{self._heuristic_call_count}, sum={sum(costs):.0f})")
-
-            return costs
-
-        # static / learned: use slice costs (fast path)
-        if info is not None:
-            return info.get('costs', [0.0] * self.n_templates)
-        return [0.0] * self.n_templates
-
     def run_training(self):
-        """Main training loop for the local reinforcement learning agent."""
+        """Main training loop for the local reinforcement learning agent.
+        """
         print(f"[Worker Client {self.replica_id}] Initiating registration protocol with Master Router...")
         registered = self.register_to_master(local_hostname=self.db_host, local_port=self.db_port)
         if not registered:
@@ -307,8 +247,7 @@ class QDinaNetworkClient:
 
         print(f"[Worker Client {self.replica_id}] Loaded {len(queries)} training queries "
               f"({len(set(templates))} unique templates) from ./workload_output/")
-
-        self.query_to_template = {q: t for q, t in zip(queries, templates)}
+        print(f"[Worker Client {self.replica_id}] Router mode: {self.router_mode.upper()}")
 
         self.candidates = self._generate_candidates(queries, templates)
         self.n_candidates = len(self.candidates)
@@ -328,40 +267,24 @@ class QDinaNetworkClient:
         self.env.set_full_workload(queries, templates)
 
         if self.router_mode == 'heuristic':
-            stored = len(self.env._full_workload_queries)
-            if stored == 0:
-                print(f"[Worker Client {self.replica_id}] " + "=" * 70)
-                print(f"[Worker Client {self.replica_id}] FATAL: heuristic mode + empty workload.")
-                print(f"[Worker Client {self.replica_id}] `env.set_full_workload()` received 0 queries.")
-                print(f"[Worker Client {self.replica_id}] Phase-1 (full-workload cost) cannot run.")
-                print(f"[Worker Client {self.replica_id}] Check `./workload_output/*.sql` exists on this node.")
-                print(f"[Worker Client {self.replica_id}] " + "=" * 70)
-                sys.exit(1)
-            print(f"[Worker Client {self.replica_id}] ✓ env._full_workload_queries = {stored} queries.")
+            print(f"[Worker Client {self.replica_id}] ✓ HEURISTIC: full-workload cost "
+                  f"({len(queries)} queries) will be recomputed every step (10-15s/step).")
+        else:
+            print(f"[Worker Client {self.replica_id}] ✓ {self.router_mode.upper()}: "
+                  f"using slice costs (fast, ~1s/step).")
 
         self._init_agent_networks()
         local_state, _ = self.env.reset()
 
-        # ─────────────────────────────────────────────────────────────────────
-        # TWO-PHASE ROUTER — Phase 1 bootstrap (heuristic mode only)
-        #
-        # The router's diversity routing needs a DENSE cost matrix at step 0.
-        # If we enter the loop with `costs_per_template = [0]*22`, the router
-        # sees all-zero costs on all replicas, tie-breaks everything to
-        # replica 0, and never recovers.
-        #
-        # So BEFORE the first SubmitMetricsAndGetWorkload, we compute the
-        # full-workload cost matrix on this replica (Phase 1) and send it.
-        # The router will have a real (if initially similar-across-replicas)
-        # matrix to route with.
-        # ─────────────────────────────────────────────────────────────────────
+        # Bootstrap: in heuristic mode, populate costs_per_template once before
+        # the loop so the very first SubmitMetricsAndGetWorkload carries real costs
+        # (not [0]*22). This gives the router a valid dense matrix at step 0.
         if self.router_mode == 'heuristic':
-            print(f"[Worker Client {self.replica_id}] Phase-1 bootstrap: computing initial full-workload costs...")
             _t0 = time.time()
             costs_per_template = self.env.estimate_full_workload_costs()
             current_cost_tracker = float(sum(costs_per_template))
-            _dt = time.time() - _t0
-            print(f"[Worker Client {self.replica_id}] Phase-1 bootstrap done in {_dt:.2f}s: sum={current_cost_tracker:.0f}")
+            print(f"[Worker Client {self.replica_id}] Bootstrap full-workload cost: "
+                  f"sum={current_cost_tracker:.0f} in {time.time()-_t0:.2f}s")
 
         while True:
             try:
@@ -379,10 +302,17 @@ class QDinaNetworkClient:
 
                 current_queries = list(response.queries)
                 if not current_queries:
-                    print(f"[Worker Client {self.replica_id}] Idle: no sub-workload queries assigned.")
-                    if self.router_mode != 'heuristic':
-                        costs_per_template = [0.0] * self.n_templates
-                        current_cost_tracker = 0.0
+                    print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node for the current step.")
+                    time.sleep(0.5)
+                    current_queries = list(response.queries)
+                if not current_queries:
+                    print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node. Reporting idle state.")
+                    # CHANGE #1: in heuristic, still compute full workload so the
+                    # router's cost matrix stays fresh. In static/learned, reuse
+                    # previous costs (fast).
+                    if self.router_mode == 'heuristic':
+                        costs_per_template = self.env.estimate_full_workload_costs()
+                        current_cost_tracker = float(sum(costs_per_template))
                     time.sleep(0.2)
                     continue
 
@@ -393,8 +323,7 @@ class QDinaNetworkClient:
                     self.param_layers = response.param_layers
 
                 print(f"[Worker Client {self.replica_id}] Sliced workload received containing {len(current_queries)} active queries.")
-
-                dynamic_templates_map = [self.query_to_template.get(q_text, 0) for q_text in current_queries]
+                dynamic_templates_map = [hash(q_text) % self.n_templates for q_text in current_queries]
                 self.env.templates = dynamic_templates_map
 
                 action = self._select_action(local_state)
@@ -403,8 +332,13 @@ class QDinaNetworkClient:
                 if terminated:
                     print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
 
-                    costs_per_template = [0.0] * self.n_templates
-                    current_cost_tracker = 0.0
+                    # CHANGE #2: heuristic computes full workload; others use 0s
+                    # (server ignores these on local_reset=True anyway).
+                    if self.router_mode == 'heuristic':
+                        costs_per_template = self.env.estimate_full_workload_costs()
+                    else:
+                        costs_per_template = [0.0] * self.n_templates
+                    current_cost_tracker = float(sum(costs_per_template))
                     current_storage_usage = info.get('storage', 0.0)
                     active_indexes = self.env.get_active_index_names()
 
@@ -434,7 +368,23 @@ class QDinaNetworkClient:
 
                 current_storage_usage = info.get('storage', 0.0)
 
-                costs_per_template = self._report_costs(info=info)
+                # CHANGE #3: THE critical one. In heuristic mode, compute the FULL
+                # workload cost (all ~1100 queries × 22 templates) — this is what
+                # the server's diversity router needs. In static/learned, use the
+                # slice costs from info (fast and correct enough for those modes).
+                if self.router_mode == 'heuristic':
+                    _t0 = time.time()
+                    costs_per_template = self.env.estimate_full_workload_costs()
+                    _dt = time.time() - _t0
+                    if not hasattr(self, '_heuristic_call_count'):
+                        self._heuristic_call_count = 0
+                    self._heuristic_call_count += 1
+                    if self._heuristic_call_count == 1 or self._heuristic_call_count % 10 == 0:
+                        print(f"[Worker Client {self.replica_id}] [HEURISTIC] full-workload cost "
+                              f"took {_dt:.2f}s, {len(self.env._full_workload_queries)} queries, "
+                              f"sum={sum(costs_per_template):.0f}")
+                else:
+                    costs_per_template = info.get('costs', [0.0] * self.n_templates)
                 current_cost_tracker = float(sum(costs_per_template))
 
                 storage_str = f"{current_storage_usage / 1_000_000_000:.2f} GB"
@@ -445,7 +395,12 @@ class QDinaNetworkClient:
                 time.sleep(5.0)
 
     def _generate_candidates(self, queries: list[str], templates: list[int]) -> list[tuple[str, tuple[str, ...]]]:
-        """Generate index candidates from the given workload using the Preprocessor."""
+        """Generate index candidates from the given workload using the Preprocessor.
+
+        Returns:
+            list[tuple[str, tuple[str, ...]]]: A list of candidates, each as a tuple
+                (table_name, (col1, col2, ...)).
+        """
         replica = Replica(
             id=self.replica_id,
             hostname=self.db_host,
@@ -473,8 +428,13 @@ class QDinaNetworkClient:
         return candidates_with_table
 
     def _handle_stop_training(self):
-        """Handles a global episode end: resets the local environment, sends an
-        acknowledgment with local_reset=True, and waits for the new workload."""
+        """
+        Handles a global episode end: resets the local environment, sends an
+        acknowledgment with local_reset=True, and waits for the new workload.
+
+        Returns:
+            tuple: (response, local_state, current_cost_tracker, current_storage_usage, costs_per_template)
+        """
         print(f"[Worker Client {self.replica_id}] Master broadcasted stop_training signal. "
             f"Resetting local environment and acknowledging...")
 
@@ -487,13 +447,16 @@ class QDinaNetworkClient:
         current_cost_tracker = 0.0
         current_storage_usage = 0.0
 
-        # Reset costs are ignored by the master (its local_reset branch uses
-        # last_valid_*), so we skip the expensive full-workload estimation
-        # even in heuristic mode.
-        costs_per_template = [0.0] * self.n_templates
-        current_cost_tracker = 0.0
+        # CHANGE #4: in heuristic mode, compute full workload (matches original
+        # behavior). In static/learned, use 0s (server ignores on local_reset anyway,
+        # so we save the expensive call).
+        if self.router_mode == 'heuristic':
+            costs_per_template = self.env.estimate_full_workload_costs()
+        else:
+            costs_per_template = [0.0] * self.n_templates
+        current_cost_tracker = float(sum(costs_per_template))
 
-        ack_metrics = qdina_pb2.LocalMessage if False else qdina_pb2.LocalMetrics(
+        ack_metrics = qdina_pb2.LocalMetrics(
             replica_id=self.replica_id,
             total_cost=current_cost_tracker,
             costs=costs_per_template,
