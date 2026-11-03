@@ -327,7 +327,18 @@ class QDinaNetworkClient:
                 self.env.templates = dynamic_templates_map
 
                 action = self._select_action(local_state)
-                next_state, reward, terminated, truncated, info = self.env.step(action, queries=current_queries)
+                if self.router_mode == 'heuristic':
+                    # In heuristic mode, the agent must optimize against the FULL workload,
+                    # not the slice. The router needs a real cost difference between replicas
+                    # (from optimized indexes) to make a good routing decision. Optimizing
+                    # against a ~150-query slice makes every 'add index' look bad (5% saving)
+                    # while the full workload would have shown 50-90% saving, so the agent
+                    # learns 'no-op' and stays at Storage=0.00 GB — which is what we observe.
+                    queries_for_step = self.env._full_workload_queries
+                    self.env.templates = self.env._full_templates_map
+                else:
+                    queries_for_step = current_queries
+                next_state, reward, terminated, truncated, info = self.env.step(action, queries=queries_for_step)
 
                 if terminated:
                     print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
