@@ -277,24 +277,14 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 state = self.env._get_obs()
 
                                 if self.router_mode == 'heuristic':
-                                    # Two-phase router — Phase 2.
-                                    #
-                                    # Phase 1 (worker): compute full-workload cost (~1100 queries × 22 templates).
-                                    # Phase 2 (this): route each template to cheapest replica, with load balance.
-                                    #
-                                    # Change routing only every `routing_change_interval` steps.
-                                    # Changing every step makes the makespan oscillate between
-                                    # configurations that trade cost for balance, giving an
-                                    # unstable training signal. With interval=3, routing settles
-                                    # into a good configuration for several steps before moving.
-                                    self.steps_since_last_change += 1
-                                    if self.steps_since_last_change >= self.routing_change_interval:
-                                        next_routes = self._diversity_routing(
-                                            sorted_workers, threshold=self.heuristic_theta
-                                        )
-                                        self.routing_table_state = next_routes
-                                        self.env._state_routes = next_routes.copy()
-                                        self.steps_since_last_change = 0
+                                    # Two-phase router — Phase 2:
+                                    # In heuristic mode, route at every step based on the full-workload
+                                    # cost reported by each agent for the current step.
+                                    next_routes = self._diversity_routing(
+                                        sorted_workers, threshold=self.heuristic_theta
+                                    )
+                                    self.routing_table_state = next_routes
+                                    self.env._state_routes = next_routes.copy()
                                     action = 0
                                     template_costs_matrix = self._last_known_cost_matrix.copy()
 
@@ -579,30 +569,49 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             if not np.any(np.isfinite(matrix[t])):
                 continue
 
-            order = np.argsort(matrix[t])
-            route_to = int(order[0])
+            valid_replicas = [r for r in range(n_r) if np.isfinite(matrix[t, r])]
+            if not valid_replicas:
+                continue
 
-            for i_r in order[1:]:
-                i_r = int(i_r)
-                if not np.isfinite(matrix[t, i_r]):
-                    break
-                if matrix[t, i_r] < baseline[t]:
-                    # Paper semantics: if the best-fit replica has no load yet,
-                    # keep it (nothing to rebalance against).
-                    if loads[order[0]] == 0:
-                        continue
-                    if (loads[i_r] / loads[order[0]]) < threshold:
-                        route_to = i_r
+            min_cost = min(matrix[t, r] for r in valid_replicas)
+            cost_tol = 1e-5 * max(1.0, min_cost)
+            best_replicas = [r for r in valid_replicas if abs(matrix[t, r] - min_cost) <= cost_tol]
+
+            if len(best_replicas) > 1:
+                # Load balance on ties: when multiple replicas share the lowest cost
+                # (e.g. at step 0 where no index is created yet, or when none/all have an index),
+                # assign the template to the replica with the least cumulative workload.
+                route_to = min(best_replicas, key=lambda r: (loads[r], r))
+            else:
+                r_best = best_replicas[0]
+                route_to = r_best
+
+                # DiversityClusterDB load-aware rebalancing:
+                # If the best-fit replica already carries load, consider moving to a sub-optimal
+                # replica only if that replica is significantly less loaded (ratio < threshold)
+                # and still provides a real benefit over the baseline (cost < baseline).
+                if loads[r_best] > 0:
+                    eligible_rebalance = [
+                        r for r in valid_replicas
+                        if r != r_best
+                        and (loads[r] / loads[r_best]) < threshold
+                        and matrix[t, r] < baseline[t]
+                    ]
+                    if eligible_rebalance:
+                        # Pick the lowest-cost replica among the underloaded candidates,
+                        # breaking ties with lowest load.
+                        route_to = min(eligible_rebalance, key=lambda r: (matrix[t, r], loads[r]))
 
             chosen[t] = route_to
             if np.isfinite(matrix[t, route_to]):
-                loads[route_to] += freq[t] * matrix[t, route_to]
+                loads[route_to] += matrix[t, route_to]
 
         # Fallback: templates with no cost anywhere go to the least-loaded replica.
-        min_replica = int(np.argmin(loads))
         for t in range(self.n_templates):
             if not np.any(np.isfinite(matrix[t])):
+                min_replica = int(np.argmin(loads))
                 chosen[t] = min_replica
+                loads[min_replica] += 1.0
 
         return chosen
 
