@@ -97,9 +97,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         # (DINA's sentinel `routes[template] = -1` behaviour).
         self._update_templates = set()
 
-        # Heuristic-mode state (DiversityClusterDB per-query routing):
-        self._heuristic_query_routes = None
-        self._heuristic_routes_pool = None
+        # Heuristic-mode state (DiversityClusterDB template-level routing):
         self._full_template_counts = None
         self._no_index_costs = None
 
@@ -148,8 +146,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         if self.router_mode == 'heuristic':
             if self._full_template_counts is None and np.sum(template_counts) > 0:
                 self._full_template_counts = template_counts.astype(np.float64).copy()
-            self._heuristic_query_routes = None
-            self._heuristic_routes_pool = None
         print(f"[Router] Routing table initialized with loads: {loads}")
 
     def RegisterWorker(self, request, context):
@@ -220,8 +216,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         self.steps_since_last_change = 0
                         if self.router_mode == 'heuristic':
                             self._last_known_cost_matrix.fill(0.0)
-                            self._heuristic_query_routes = None
-                            self._heuristic_routes_pool = None
 
                         self.lock.notify_all()
 
@@ -299,20 +293,20 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                                 state = self.env._get_obs()
 
                                 if self.router_mode == 'heuristic':
-                                    # DiversityClusterDB routing executed at EVERY step:
+                                    # DiversityClusterDB routing executed at EVERY step (whole-template):
                                     #   1) Costs   : every agent reported full-workload costs under its
                                     #                current indexes (collected_metrics).
                                     #   2) Routing : Benefit-First Load-Aware routing (Hang et al. 2024,
-                                    #                Algorithm 3) applied per query on the current pool.
-                                    #   3) Exec    : execution cost per replica = sum of routed query costs.
-                                    (template_table, query_routes,
-                                     heuristic_exec_costs, heuristic_query_counts) = self._diversity_routing(
+                                    #                Algorithm 3) assigning each full template to 1 replica
+                                    #                (exact 1-to-1 match with routes.csv / benchmark).
+                                    #   3) Exec    : execution cost per replica = sum of routed template costs.
+                                    (next_routes,
+                                     heuristic_exec_costs,
+                                     heuristic_query_counts) = self._diversity_routing(
                                         sorted_workers, threshold=self.heuristic_theta
                                     )
-                                    self._heuristic_query_routes = query_routes
-                                    self._heuristic_routes_pool = self.current_workload_pool
-                                    self.routing_table_state = template_table
-                                    self.env._state_routes = template_table.copy()
+                                    self.routing_table_state = next_routes
+                                    self.env._state_routes = next_routes.copy()
                                     action = 0
                                     template_costs_matrix = self._last_known_cost_matrix.copy()
 
@@ -508,19 +502,23 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
     def _diversity_routing(self, sorted_workers, threshold=0.6):
         '''
         DiversityClusterDB Benefit-First Load-Aware Routing (Hang et al. 2024, Algorithm 3),
-        executed at EVERY step in 3 explicit phases:
-          1) Cost collection : build the (n_templates x n_replicas) full-workload cost matrix
-                               from the costs just reported by all agents under their current indexes.
-          2) Query routing   : route every query q in the current workload pool using Algorithm 3
-                               (rank replicas by cost, transfer to beneficial sub-optimal replica if
-                               l_j / l_i1 < theta) + makespan-aware safeguard (Eq. 4: never overload
-                               a replica past another replica that can finish q sooner).
-          3) Execution cost  : compute exact per-replica execution cost = sum of routed query costs
-                               (Eq. 3), giving Makespan (Eq. 4) and Jain Index close to 1.0.
+        executed at EVERY step at WHOLE-TEMPLATE granularity (1 replica per template,
+        matching routes.csv and qdina-bench 1-to-1) in 3 explicit phases:
+          1) Cost collection  : build the (n_templates x n_replicas) cost matrix from the
+                                full-workload costs just reported by all agents under their
+                                current indexes, scaled to the current pool frequencies.
+          2) Template routing : assign each full template t (heaviest first, LPT order) to a
+                                single replica using Algorithm 3 (rank replicas by cost,
+                                transfer to beneficial sub-optimal replica if l_j / l_i1 < theta)
+                                + makespan-aware safeguard (Eq. 4: never overload a replica past
+                                another replica that finishes template t sooner) + light greedy
+                                makespan refinement.
+          3) Execution cost   : compute exact per-replica execution cost = sum of routed
+                                template costs (Eq. 3) and query counts.
 
         :param sorted_workers: list of worker ids in a stable order.
         :param threshold: the paper's theta parameter (0 < threshold <= 1).
-        :returns: (template_table, query_routes, exec_costs, query_counts)
+        :returns: (chosen, exec_costs, query_counts)
         '''
         n_r = len(sorted_workers)
         theta = float(threshold) if threshold is not None else 0.6
@@ -550,7 +548,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                     if prev_known[t, r_idx] > 0.0:
                         matrix[t, r_idx] = prev_known[t, r_idx]
 
-            # Record true no-index baseline cost(q, empty) whenever a replica has 0 active indexes
+            # Record true no-index baseline cost(t, empty) whenever a replica has 0 active indexes
             if valid_full and len(metrics.get('indexes', [])) == 0:
                 if self._no_index_costs is None:
                     self._no_index_costs = row_vals.copy()
@@ -558,76 +556,65 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         finite_mask = np.isfinite(matrix)
         self._last_known_cost_matrix = np.where(finite_mask, matrix, prev_known)
 
-        # Full-workload template counts (used to convert full-template cost into per-query cost)
-        if self._full_template_counts is None:
-            counts = np.zeros(self.n_templates, dtype=np.float64)
-            for t in self.workload_templates_map:
-                try:
-                    t_int = int(t)
-                except (TypeError, ValueError):
-                    continue
-                if 0 <= t_int < self.n_templates:
-                    counts[t_int] += 1.0
-            self._full_template_counts = counts
-        n_full = np.maximum(self._full_template_counts, 1.0)
+        # Template counts in the current pool vs the full workload (handles drift cleanly)
+        freq = np.zeros(self.n_templates, dtype=np.float64)
+        for t in self.workload_templates_map:
+            try:
+                t_int = int(t)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= t_int < self.n_templates:
+                freq[t_int] += 1.0
 
-        q_cost = matrix / n_full[:, None]
+        if self._full_template_counts is None:
+            self._full_template_counts = freq.copy()
+        n_full = np.maximum(self._full_template_counts, 1.0)
+        scale = np.where(freq > 0.0, freq / n_full, 1.0)
+
+        # Cost of executing ALL queries of template t in the current pool on replica r
+        pool_cost = matrix * scale[:, None]
 
         # Fill any missing entries with the template's max known cost (no-index proxy)
-        # so no replica is ever stuck at +inf and starved of queries.
-        known = q_cost[np.isfinite(q_cost)]
+        # so no replica is ever stuck at +inf and starved of templates.
+        known = pool_cost[np.isfinite(pool_cost)]
         default_cost = float(np.mean(known)) if known.size > 0 else 1.0
         for t in range(self.n_templates):
-            row = q_cost[t]
+            row = pool_cost[t]
             fin = np.isfinite(row)
             fill = float(np.max(row[fin])) if np.any(fin) else default_cost
             row[~fin] = fill
 
-        # Baseline cost(q, empty) per query
+        # Baseline cost(t, empty) for the current pool
         if self._no_index_costs is not None and len(self._no_index_costs) == self.n_templates:
-            baseline = np.maximum(self._no_index_costs / n_full, np.max(q_cost, axis=1))
+            baseline = np.maximum(self._no_index_costs * scale, np.max(pool_cost, axis=1))
         else:
-            baseline = np.max(q_cost, axis=1)
+            baseline = np.max(pool_cost, axis=1)
 
-        # --- Phase 2: Benefit-First Load-Aware Routing (Algorithm 3), per query ---
+        # --- Phase 2: Whole-template Benefit-First Load-Aware Routing (Algorithm 3) ---
         loads = np.zeros(n_r, dtype=np.float64)
         query_counts = np.zeros(n_r, dtype=np.int64)
-        n_queries = len(self.current_workload_pool)
-        query_routes = [0] * n_queries
-        template_hits = np.zeros((self.n_templates, n_r), dtype=np.int64)
+        chosen = np.array(self.routing_table_state, dtype=np.int32).copy()
+        if chosen.shape != (self.n_templates,):
+            chosen = np.zeros(self.n_templates, dtype=np.int32)
 
-        pool_templates = []
-        for idx in range(n_queries):
-            try:
-                t = int(self.workload_templates_map[idx])
-            except (TypeError, ValueError, IndexError):
-                t = -1
-            pool_templates.append(t)
-
-        # Broadcast update templates (INSERT/UPDATE/DELETE) to every replica
-        analytical_indices = []
-        for idx, t in enumerate(pool_templates):
-            if 0 <= t < self.n_templates and t in self._update_templates:
-                loads += q_cost[t]
-                query_counts += 1
-                query_routes[idx] = -1
+        # Update templates (INSERT/UPDATE/DELETE) are broadcast to every replica
+        analytical_templates = []
+        for t in range(self.n_templates):
+            if freq[t] <= 0.0:
+                continue
+            if t in self._update_templates:
+                loads += pool_cost[t]
+                query_counts += int(freq[t])
             else:
-                analytical_indices.append(idx)
+                analytical_templates.append(t)
 
-        # Process heaviest queries first (LPT order) so lighter queries smooth out
-        # residual load differences across replicas.
-        analytical_indices.sort(
-            key=lambda idx: (
-                -(baseline[pool_templates[idx]] if 0 <= pool_templates[idx] < self.n_templates else default_cost),
-                idx
-            )
-        )
+        # Place heaviest templates first (LPT order) so lighter templates balance the load
+        analytical_templates.sort(key=lambda t: (-baseline[t], t))
 
-        for idx in analytical_indices:
-            t = pool_templates[idx]
-            cost = q_cost[t] if 0 <= t < self.n_templates else np.full(n_r, default_cost)
+        for t in analytical_templates:
+            cost = pool_cost[t]
 
-            # Algorithm 3 Line 1-2: rank by cost; break cost ties using lowest current load.
+            # Algorithm 3 Lines 1-2: rank by cost; break cost ties using lowest current load.
             min_c = float(np.min(cost))
             cost_tol = 1e-4 * max(1.0, min_c)
             best_group = [r for r in range(n_r) if cost[r] <= min_c + cost_tol]
@@ -636,7 +623,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
 
             # Algorithm 3 Lines 3-9: transfer to a beneficial sub-optimal replica
             # whose current load is < theta * loads[i1].
-            if loads[i1] > 0.0 and 0 <= t < self.n_templates:
+            if loads[i1] > 0.0:
                 others = sorted(
                     (r for r in range(n_r) if r != i1),
                     key=lambda r: (cost[r], loads[r], r)
@@ -647,30 +634,45 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
                         break
 
             # Makespan-aware load safeguard (Eq. 4 of Hang et al. 2024):
-            # If another replica can finish query q earlier than dest (l_r + cost(q, r) < l_dest + cost(q, dest)),
-            # route q there so replicas without indexes yet are never starved and Jain Index stays ~1.0.
+            # Never overload dest past a replica that finishes template t earlier.
             best_mct = min(range(n_r), key=lambda r: (loads[r] + cost[r], cost[r], r))
             if loads[best_mct] + cost[best_mct] < loads[dest] + cost[dest]:
                 dest = best_mct
 
-            query_routes[idx] = dest
+            chosen[t] = dest
             loads[dest] += cost[dest]
-            query_counts[dest] += 1
-            if 0 <= t < self.n_templates:
-                template_hits[t, dest] += 1
+            query_counts[dest] += int(freq[t])
 
-        # Build a balanced 22-entry summary table (for display & routes.csv export)
-        template_table = np.array(self.routing_table_state, dtype=np.int32).copy()
-        if template_table.shape != (self.n_templates,):
-            template_table = np.zeros(self.n_templates, dtype=np.int32)
-        assigned_per_replica = np.zeros(n_r, dtype=np.int64)
+        # Light greedy makespan / Jain refinement (1-template move off the bottleneck replica)
+        for _ in range(50):
+            improved = False
+            r_max = int(np.argmax(loads))
+            cur_mk = loads[r_max]
+            for t in analytical_templates:
+                if chosen[t] != r_max:
+                    continue
+                for r in range(n_r):
+                    if r == r_max:
+                        continue
+                    new_rmax = loads[r_max] - pool_cost[t, r_max]
+                    new_r = loads[r] + pool_cost[t, r]
+                    if max(new_rmax, new_r) < cur_mk - 1e-6:
+                        loads[r_max] = new_rmax
+                        loads[r] = new_r
+                        query_counts[r_max] -= int(freq[t])
+                        query_counts[r] += int(freq[t])
+                        chosen[t] = r
+                        improved = True
+                        break
+                if improved:
+                    break
+            if not improved:
+                break
+
+        # Assign any zero-frequency templates (in drifted pools) to the least-loaded replica
         for t in range(self.n_templates):
-            if template_hits[t].sum() > 0:
-                max_hits = int(np.max(template_hits[t]))
-                top_r = [r for r in range(n_r) if template_hits[t, r] >= max(1, max_hits - 1)]
-                chosen_r = min(top_r, key=lambda r: (assigned_per_replica[r], -template_hits[t, r], r))
-                template_table[t] = chosen_r
-                assigned_per_replica[chosen_r] += 1
+            if freq[t] <= 0.0 and t not in self._update_templates:
+                chosen[t] = int(np.argmin(loads))
 
         # --- Phase 3: Per-replica execution cost for this routing (Eq. 3) ---
         exec_costs = np.zeros(self.n_replicas, dtype=np.float64)
@@ -680,7 +682,7 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
             exec_costs[:m] = loads[:m]
         counts_out[:m] = query_counts[:m]
 
-        return template_table, query_routes, exec_costs, counts_out
+        return chosen, exec_costs, counts_out
 
     def _get_routed_slice_for_node(self, node_id):
         """Compute the list of queries to be routed to a specific worker node.
@@ -700,17 +702,6 @@ class QDinaServerServicer(qdina_pb2_grpc.QDinaServiceServicer):
         except ValueError:
             print(f"[WARNING] Node {node_id} not found in registered workers, using fallback.")
             internal_id = len(sorted_workers)  # fallback
-
-        if (self.router_mode == 'heuristic'
-                and self._heuristic_query_routes is not None
-                and self._heuristic_routes_pool is self.current_workload_pool
-                and len(self._heuristic_query_routes) == len(self.current_workload_pool)):
-            sliced_queries = []
-            for idx, q_text in enumerate(self.current_workload_pool):
-                assigned = self._heuristic_query_routes[idx]
-                if assigned == -1 or assigned == internal_id:
-                    sliced_queries.append(q_text)
-            return sliced_queries
 
         if hasattr(self, 'execution_mode') and self.execution_mode == 'uniform':
             sliced_queries = []
