@@ -1,6 +1,7 @@
 #!/bin/bash
 exec > >(tee -a /var/log/cloudlab_startup.log) 2>&1
 set -ex
+set -o pipefail
 
 ROLE=$1                    # "router" or "worker"
 WORKER_COUNT=${2:-2}       # Total replica count defined in CloudLab
@@ -13,8 +14,9 @@ ROUTER_MODE=${8:-learned}  # Routing strategy: learned | static | heuristic
 
 export DEBIAN_FRONTEND=noninteractive
 
-# Force APT to use IPv4 globally to prevent IPv6 routing timeouts
+# Force APT to use IPv4 globally AND retry failed downloads automatically
 echo 'Acquire::ForceIPv4 "true";' | tee /etc/apt/apt.conf.d/99force-ipv4
+echo 'Acquire::Retries "5";'       | tee /etc/apt/apt.conf.d/99retries
 
 # 1. Clean up lingering APT locks from early boot
 sleep 5
@@ -24,22 +26,68 @@ pkill -9 -f apt-get 2>/dev/null || true
 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
 dpkg --configure -a 2>/dev/null || true
 
-# 2. Add deadsnakes PPA and install Python 3.12 (robust direct-key download)
+# 2. Add deadsnakes PPA and install Python 3.12
 sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list
 apt-get update -qq
 apt-get install -y -qq software-properties-common ca-certificates dirmngr gnupg curl
 
-# Download the key and save it in a keyring for apt to use
+# Download the key (with fallback to GitHub raw if the keyserver 503s)
 mkdir -p /etc/apt/keyrings
-curl -fsSL https://keyserver.ubuntu.com/pks/lookup?op=get\&search=0xBA6932366A755776 | gpg --dearmor -o /etc/apt/keyrings/deadsnakes.gpg || \
-curl -fsSL https://raw.githubusercontent.com/deadsnakes/issues/master/deadsnakes.key | gpg --dearmor -o /etc/apt/keyrings/deadsnakes.gpg
+if ! curl -fsSL https://keyserver.ubuntu.com/pks/lookup?op=get\&search=0xBA6932366A755776 | gpg --dearmor -o /etc/apt/keyrings/deadsnakes.gpg; then
+    echo "=== keyserver.ubuntu.com failed; trying GitHub raw key ==="
+    curl -fsSL https://raw.githubusercontent.com/deadsnakes/issues/master/deadsnakes.key | gpg --dearmor -o /etc/apt/keyrings/deadsnakes.gpg
+fi
 
 echo "deb [signed-by=/etc/apt/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main" > /etc/apt/sources.list.d/deadsnakes-ubuntu-ppa-jammy.list
 
 apt-get update -qq
-apt-get install -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    git tmux netcat-openbsd curl build-essential gcc make psmisc \
-    python3.12 python3.12-venv python3.12-dev
+
+# Install base system tools first (these come from main Ubuntu repos, not deadsnakes,
+# so they always succeed regardless of the PPA's health)
+apt-get install -y -qq git tmux netcat-openbsd curl build-essential gcc make psmisc
+
+# Install Python 3.12 with retry loop (deadsnakes has transient 503s)
+DEADSNAKES_OK=0
+for attempt in 1 2 3 4 5; do
+    echo "=== Python 3.12 install attempt ${attempt}/5 ==="
+    if apt-get install -y -qq \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        python3.12 python3.12-venv python3.12-dev; then
+        DEADSNAKES_OK=1
+        break
+    fi
+    echo "=== Attempt ${attempt} failed; cleaning apt cache and retrying in 20s ==="
+    apt-get clean || true
+    apt-get update -qq --fix-missing || true
+    sleep 20
+done
+
+# Fallback: install Python 3.12 via pyenv (compiles from source, ~10 min)
+if [ "$DEADSNAKES_OK" -eq 0 ]; then
+    echo "=== deadsnakes PPA unreachable after 5 attempts; falling back to pyenv ==="
+    apt-get install -y -qq make build-essential libssl-dev zlib1g-dev \
+        libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm \
+        libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev
+
+    export PYENV_ROOT="/root/.pyenv"
+    curl -fsSL https://pyenv.run | bash
+    export PATH="$PYENV_ROOT/bin:$PATH"
+    eval "$(pyenv init -)"
+    pyenv install -s 3.12.7
+    pyenv global 3.12.7
+
+    # Persist for login shells and tmux sessions
+    cat > /etc/profile.d/pyenv.sh << 'EOF'
+export PYENV_ROOT="/root/.pyenv"
+export PATH="$PYENV_ROOT/shims:$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
+EOF
+    chmod 644 /etc/profile.d/pyenv.sh
+fi
+
+# Sanity check: fail loudly now if Python 3.12 is not actually usable
+python3.12 --version
 
 # 3. Setup Python virtual environment
 REPO_DIR="/decentral-qdina"
