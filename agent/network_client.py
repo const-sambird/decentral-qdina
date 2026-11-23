@@ -71,6 +71,18 @@ class QDinaNetworkClient:
         self._step_counter = 0
         self.target_update_freq = 10
         self.param_layers = 5
+        self._heuristic_full_cost_cache = {}
+        self._heuristic_query_to_template = {}
+
+    def _get_heuristic_full_workload_costs(self):
+        """Return full-workload costs for all templates under current indexes (cached by index state)."""
+        idx_key = tuple(int(v) for v in self.env._current_indexes)
+        cached = self._heuristic_full_cost_cache.get(idx_key)
+        if cached is not None:
+            return list(cached)
+        costs = self.env.estimate_full_workload_costs()
+        self._heuristic_full_cost_cache[idx_key] = list(costs)
+        return list(costs)
 
     def register_to_master(self, local_hostname: str = '127.0.0.1', local_port: int = 5432):
         """Register this worker node with the master router via gRPC.
@@ -86,6 +98,9 @@ class QDinaNetworkClient:
             )
             response = self.stub.RegisterWorker(request)
             print(f"[Worker Client {self.replica_id}] Registration Status: {response.status} | Message: {response.message}")
+            if "router_mode=heuristic" in (response.message or "") and self.router_mode != 'heuristic':
+                print(f"[Worker Client {self.replica_id}] Auto-switching router_mode to HEURISTIC to match Master Router.")
+                self.router_mode = 'heuristic'
             return response.status
         except grpc.RpcError as e:
             print(f"[Worker Client {self.replica_id}] Critical failure during registration step: {e.details()}")
@@ -267,8 +282,11 @@ class QDinaNetworkClient:
         self.env.set_full_workload(queries, templates)
 
         if self.router_mode == 'heuristic':
+            self._heuristic_query_to_template = {
+                q.strip(): int(t) % self.n_templates for q, t in zip(queries, templates)
+            }
             print(f"[Worker Client {self.replica_id}] ✓ HEURISTIC: full-workload cost "
-                  f"({len(queries)} queries) will be recomputed every step (10-15s/step).")
+                  f"({len(queries)} queries) will be reported every step (cached when indexes unchanged).")
         else:
             print(f"[Worker Client {self.replica_id}] ✓ {self.router_mode.upper()}: "
                   f"using slice costs (fast, ~1s/step).")
@@ -281,7 +299,7 @@ class QDinaNetworkClient:
         # (not [0]*22). This gives the router a valid dense matrix at step 0.
         if self.router_mode == 'heuristic':
             _t0 = time.time()
-            costs_per_template = self.env.estimate_full_workload_costs()
+            costs_per_template = self._get_heuristic_full_workload_costs()
             current_cost_tracker = float(sum(costs_per_template))
             print(f"[Worker Client {self.replica_id}] Bootstrap full-workload cost: "
                   f"sum={current_cost_tracker:.0f} in {time.time()-_t0:.2f}s")
@@ -307,11 +325,8 @@ class QDinaNetworkClient:
                     current_queries = list(response.queries)
                 if not current_queries:
                     print(f"[Worker Client {self.replica_id}] No sub-workload queries assigned to this node. Reporting idle state.")
-                    # CHANGE #1: in heuristic, still compute full workload so the
-                    # router's cost matrix stays fresh. In static/learned, reuse
-                    # previous costs (fast).
-                    if self.router_mode == 'heuristic':
-                        costs_per_template = self.env.estimate_full_workload_costs()
+                    if self.router_mode == 'heuristic' and sum(costs_per_template) <= 0.0:
+                        costs_per_template = self._get_heuristic_full_workload_costs()
                         current_cost_tracker = float(sum(costs_per_template))
                     time.sleep(0.2)
                     continue
@@ -323,30 +338,25 @@ class QDinaNetworkClient:
                     self.param_layers = response.param_layers
 
                 print(f"[Worker Client {self.replica_id}] Sliced workload received containing {len(current_queries)} active queries.")
-                dynamic_templates_map = [hash(q_text) % self.n_templates for q_text in current_queries]
+                if self.router_mode == 'heuristic':
+                    # Map each routed query to its real TPC-H template ID and tune
+                    # indexes specifically for this replica's routed slice (heterogeneous tuning).
+                    dynamic_templates_map = [
+                        self._heuristic_query_to_template.get(q_text.strip(), hash(q_text) % self.n_templates)
+                        for q_text in current_queries
+                    ]
+                else:
+                    dynamic_templates_map = [hash(q_text) % self.n_templates for q_text in current_queries]
                 self.env.templates = dynamic_templates_map
 
                 action = self._select_action(local_state)
-                if self.router_mode == 'heuristic':
-                    # In heuristic mode, the agent must optimize against the FULL workload,
-                    # not the slice. The router needs a real cost difference between replicas
-                    # (from optimized indexes) to make a good routing decision. Optimizing
-                    # against a ~150-query slice makes every 'add index' look bad (5% saving)
-                    # while the full workload would have shown 50-90% saving, so the agent
-                    # learns 'no-op' and stays at Storage=0.00 GB — which is what we observe.
-                    queries_for_step = self.env._full_workload_queries
-                    self.env.templates = self.env._full_templates_map
-                else:
-                    queries_for_step = current_queries
-                next_state, reward, terminated, truncated, info = self.env.step(action, queries=queries_for_step)
+                next_state, reward, terminated, truncated, info = self.env.step(action, queries=current_queries)
 
                 if terminated:
                     print(f"[Worker Client {self.replica_id}] Local budget exceeded. Resetting environment.")
 
-                    # CHANGE #2: heuristic computes full workload; others use 0s
-                    # (server ignores these on local_reset=True anyway).
                     if self.router_mode == 'heuristic':
-                        costs_per_template = self.env.estimate_full_workload_costs()
+                        costs_per_template = self._get_heuristic_full_workload_costs()
                     else:
                         costs_per_template = [0.0] * self.n_templates
                     current_cost_tracker = float(sum(costs_per_template))
@@ -367,9 +377,13 @@ class QDinaNetworkClient:
                         continue
 
                     local_state, _ = self.env.reset()
-                    current_cost_tracker = 0.0
                     current_storage_usage = 0.0
-                    costs_per_template = [0.0] * self.n_templates
+                    if self.router_mode == 'heuristic':
+                        costs_per_template = self._get_heuristic_full_workload_costs()
+                        current_cost_tracker = float(sum(costs_per_template))
+                    else:
+                        current_cost_tracker = 0.0
+                        costs_per_template = [0.0] * self.n_templates
                     continue
 
                 self.local_memory.push(local_state, action, next_state, reward, terminated)
@@ -379,13 +393,12 @@ class QDinaNetworkClient:
 
                 current_storage_usage = info.get('storage', 0.0)
 
-                # CHANGE #3: THE critical one. In heuristic mode, compute the FULL
-                # workload cost (all ~1100 queries × 22 templates) — this is what
-                # the server's diversity router needs. In static/learned, use the
-                # slice costs from info (fast and correct enough for those modes).
+                # In heuristic mode, report the FULL workload cost (all ~1100 queries × 22 templates)
+                # under the updated index configuration so the router can make its DiversityClusterDB
+                # routing decision on the next step. In static/learned, keep slice costs unchanged.
                 if self.router_mode == 'heuristic':
                     _t0 = time.time()
-                    costs_per_template = self.env.estimate_full_workload_costs()
+                    costs_per_template = self._get_heuristic_full_workload_costs()
                     _dt = time.time() - _t0
                     if not hasattr(self, '_heuristic_call_count'):
                         self._heuristic_call_count = 0
@@ -462,7 +475,7 @@ class QDinaNetworkClient:
         # behavior). In static/learned, use 0s (server ignores on local_reset anyway,
         # so we save the expensive call).
         if self.router_mode == 'heuristic':
-            costs_per_template = self.env.estimate_full_workload_costs()
+            costs_per_template = self._get_heuristic_full_workload_costs()
         else:
             costs_per_template = [0.0] * self.n_templates
         current_cost_tracker = float(sum(costs_per_template))
