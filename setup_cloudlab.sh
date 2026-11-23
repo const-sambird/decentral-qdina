@@ -3,22 +3,20 @@ exec > >(tee -a /var/log/cloudlab_startup.log) 2>&1
 set -ex
 set -o pipefail
 
-ROLE=$1                    # "router" or "worker"
-WORKER_COUNT=${2:-2}       # Total replica count defined in CloudLab
-SF=${3:-10}                # TPC-H Scale Factor
-BUDGET=${4:-5000000000}    # Storage index budget in bytes
-NODE_ID=${5:-1}            # Node replica ID (1..N for workers)
-EPISODES=${6:-100}         # Number of training episodes
-SEED=${7:-100}             # Random seed
-ROUTER_MODE=${8:-learned}  # Routing strategy: learned | static | heuristic
+ROLE=$1
+WORKER_COUNT=${2:-2}
+SF=${3:-10}
+BUDGET=${4:-5000000000}
+NODE_ID=${5:-1}
+EPISODES=${6:-100}
+SEED=${7:-100}
+ROUTER_MODE=${8:-learned}
 
 export DEBIAN_FRONTEND=noninteractive
-
-# Force IPv4 + retries
 echo 'Acquire::ForceIPv4 "true";' | tee /etc/apt/apt.conf.d/99force-ipv4
 echo 'Acquire::Retries "5";'       | tee /etc/apt/apt.conf.d/99retries
 
-# 1. Clean up lingering APT locks from early boot
+# 1. Nettoyage locks APT
 sleep 5
 systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
 pkill -9 -f unattended-upg 2>/dev/null || true
@@ -26,7 +24,7 @@ pkill -9 -f apt-get 2>/dev/null || true
 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
 dpkg --configure -a 2>/dev/null || true
 
-# 2. Install base system tools from the MAIN Ubuntu repos only (no PPA)
+# 2. Outils système (dépôts Ubuntu uniquement)
 sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list
 apt-get update -qq
 apt-get install -y -qq \
@@ -35,17 +33,22 @@ apt-get install -y -qq \
     libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
     libncursesw5-dev tk-dev libffi-dev liblzma-dev
 
-# 3. Install Python 3.12 via python-build-standalone
-#    IMPORTANT: use the "install_only" variant (WITHOUT "-stripped") so that
-#    ensurepip bundles the pip/setuptools wheels required by venv.
+# 3. Python 3.12 : on force la réinstallation si le binaire existant est cassé
 PYTHON_VERSION="3.12.7"
 PYTHON_RELEASE="20241016"
 PYTHON_INSTALL_DIR="/opt/python3.12"
+PYTHON_BIN="${PYTHON_INSTALL_DIR}/bin/python3.12"
 
-if [ ! -x "${PYTHON_INSTALL_DIR}/bin/python3.12" ]; then
-    echo "=== Installing Python ${PYTHON_VERSION} from python-build-standalone ==="
-    ARCH=$(uname -m)   # x86_64 on CloudLab
-    # NOTE: no "-stripped" suffix -> ensurepip wheels are present.
+# Test fonctionnel : le binaire doit pouvoir charger sa stdlib
+if [ -x "$PYTHON_BIN" ] && "$PYTHON_BIN" -c "import os" 2>/dev/null; then
+    echo "=== Existing Python 3.12 at ${PYTHON_INSTALL_DIR} is healthy ==="
+else
+    echo "=== No healthy Python 3.12 found, (re)installing ==="
+    rm -rf "$PYTHON_INSTALL_DIR"
+    rm -f /usr/local/bin/python3.12 /usr/local/bin/pip3.12
+
+    ARCH=$(uname -m)
+    # IMPORTANT: pas de "-stripped" -> les wheels ensurepip sont présentes
     TARBALL="cpython-${PYTHON_VERSION}+${PYTHON_RELEASE}-${ARCH}-unknown-linux-gnu-install_only.tar.gz"
 
     URLS=(
@@ -63,14 +66,24 @@ if [ ! -x "${PYTHON_INSTALL_DIR}/bin/python3.12" ]; then
     done
 
     if [ "${DOWNLOADED}" -eq 1 ]; then
-        mkdir -p "${PYTHON_INSTALL_DIR}"
-        tar -xzf /tmp/python3.12.tar.gz -C "${PYTHON_INSTALL_DIR}" --strip-components=1
+        mkdir -p "$PYTHON_INSTALL_DIR"
+        tar -xzf /tmp/python3.12.tar.gz -C "$PYTHON_INSTALL_DIR" --strip-components=1
         rm -f /tmp/python3.12.tar.gz
-        ln -sf "${PYTHON_INSTALL_DIR}/bin/python3.12" /usr/local/bin/python3.12
-        ln -sf "${PYTHON_INSTALL_DIR}/bin/pip3.12"    /usr/local/bin/pip3.12
-        PYTHON_BIN="/usr/local/bin/python3.12"
-    else
-        echo "=== All python-build-standalone mirrors failed; falling back to pyenv compilation ==="
+
+        # Vérification stdlib + fonctionnement
+        if [ ! -f "${PYTHON_INSTALL_DIR}/lib/python3.12/os.py" ] || ! "$PYTHON_BIN" -c "import os" 2>/dev/null; then
+            echo "=== python-build-standalone install is broken (stdlib/relocation). Falling back to pyenv ==="
+            rm -rf "$PYTHON_INSTALL_DIR"
+            DOWNLOADED=0
+        else
+            ln -sf "$PYTHON_BIN" /usr/local/bin/python3.12
+            ln -sf "${PYTHON_INSTALL_DIR}/bin/pip3.12" /usr/local/bin/pip3.12
+            PYTHON_BIN="/usr/local/bin/python3.12"
+        fi
+    fi
+
+    if [ "${DOWNLOADED}" -eq 0 ] || [ ! -x "$PYTHON_BIN" ]; then
+        echo "=== Falling back to pyenv (compilation, ~10 min) ==="
         export PYENV_ROOT="/root/.pyenv"
         curl -fsSL https://pyenv.run | bash
         export PATH="$PYENV_ROOT/bin:$PATH"
@@ -86,24 +99,20 @@ eval "$(pyenv init -)"
 EOF
         chmod 644 /etc/profile.d/pyenv.sh
     fi
-else
-    echo "=== Python 3.12 already installed at ${PYTHON_INSTALL_DIR} ==="
-    PYTHON_BIN="${PYTHON_INSTALL_DIR}/bin/python3.12"
 fi
 
-# Sanity check
-"${PYTHON_BIN}" --version
+# Sanity check ultime
+"$PYTHON_BIN" -c "import os; print('Python 3.12 OK')"
 
-# 4. Setup Python virtual environment
-#    Fallback: if ensurepip still fails, create the venv without pip and
-#    bootstrap pip manually via get-pip.py.
+# 4. Venv (avec fallback --without-pip + get-pip.py)
 REPO_DIR="/decentral-qdina"
 cd "$REPO_DIR"
+rm -rf venv
 
-if ! "${PYTHON_BIN}" -m venv venv; then
-    echo "=== ensurepip failed inside venv; retrying with --without-pip ==="
+if ! "$PYTHON_BIN" -m venv venv; then
+    echo "=== ensurepip failed; using --without-pip + get-pip.py fallback ==="
     rm -rf venv
-    "${PYTHON_BIN}" -m venv --without-pip venv
+    "$PYTHON_BIN" -m venv --without-pip venv
     source venv/bin/activate
     curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
     python /tmp/get-pip.py
@@ -112,6 +121,8 @@ else
     source venv/bin/activate
 fi
 
+# Vérification venv
+python -c "import os; print('Venv OK')"
 pip install --upgrade pip
 pip install -r requirements.txt
 
@@ -152,13 +163,10 @@ echo ""
 MSG
 
     cd "$REPO_DIR"
-
     if ! tmux has-session -t qdina 2>/dev/null; then
         tmux new-session -d -s qdina -c "$REPO_DIR" "source venv/bin/activate && bash"
         tmux send-keys -t qdina "source venv/bin/activate" C-m
     fi
-
-    echo "Starting the Central Router in the 'qdina' tmux session (router_mode=${ROUTER_MODE})..."
     tmux send-keys -t qdina "time python3 -m router.main_router --mode drift --episodes ${EPISODES} --config replicas-cloudlab.csv --workload-dir ./workload_output --seed ${SEED} --router-mode ${ROUTER_MODE}" C-m
 
 # ==============================================================================
@@ -195,12 +203,9 @@ MSG
     done
 
     cd "$REPO_DIR"
-
     if ! tmux has-session -t qdina 2>/dev/null; then
         tmux new-session -d -s qdina -c "$REPO_DIR" "source venv/bin/activate && bash"
         tmux send-keys -t qdina "source venv/bin/activate" C-m
     fi
-
-    echo "Starting Agent Node ${NODE_ID} connecting to Router at 10.10.1.1:50051 (router_mode=${ROUTER_MODE})..."
     tmux send-keys -t qdina "python3 -m agent.main_agent --id ${NODE_ID} --mode classical --server 10.10.1.1:50051 --config replicas-cloudlab.csv --budget-mode ignore --storage-budget ${BUDGET} --router-mode ${ROUTER_MODE}" C-m
 fi
