@@ -27,7 +27,6 @@ rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /va
 dpkg --configure -a 2>/dev/null || true
 
 # 2. Install base system tools from the MAIN Ubuntu repos only (no PPA)
-#    These always work regardless of Launchpad's health.
 sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list
 apt-get update -qq
 apt-get install -y -qq \
@@ -36,8 +35,9 @@ apt-get install -y -qq \
     libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
     libncursesw5-dev tk-dev libffi-dev liblzma-dev
 
-# 3. Install Python 3.12 via python-build-standalone (precompiled, no PPA needed)
-#    This is the SAME approach used by Astral (uv/ruff) and avoids deadsnakes entirely.
+# 3. Install Python 3.12 via python-build-standalone
+#    IMPORTANT: use the "install_only" variant (WITHOUT "-stripped") so that
+#    ensurepip bundles the pip/setuptools wheels required by venv.
 PYTHON_VERSION="3.12.7"
 PYTHON_RELEASE="20241016"
 PYTHON_INSTALL_DIR="/opt/python3.12"
@@ -45,7 +45,8 @@ PYTHON_INSTALL_DIR="/opt/python3.12"
 if [ ! -x "${PYTHON_INSTALL_DIR}/bin/python3.12" ]; then
     echo "=== Installing Python ${PYTHON_VERSION} from python-build-standalone ==="
     ARCH=$(uname -m)   # x86_64 on CloudLab
-    TARBALL="cpython-${PYTHON_VERSION}+${PYTHON_RELEASE}-${ARCH}-unknown-linux-gnu-install_only_stripped.tar.gz"
+    # NOTE: no "-stripped" suffix -> ensurepip wheels are present.
+    TARBALL="cpython-${PYTHON_VERSION}+${PYTHON_RELEASE}-${ARCH}-unknown-linux-gnu-install_only.tar.gz"
 
     URLS=(
         "https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_RELEASE}/${TARBALL}"
@@ -90,14 +91,27 @@ else
     PYTHON_BIN="${PYTHON_INSTALL_DIR}/bin/python3.12"
 fi
 
-# Sanity check: fail loudly if Python 3.12 is not usable
+# Sanity check
 "${PYTHON_BIN}" --version
 
 # 4. Setup Python virtual environment
+#    Fallback: if ensurepip still fails, create the venv without pip and
+#    bootstrap pip manually via get-pip.py.
 REPO_DIR="/decentral-qdina"
 cd "$REPO_DIR"
-"${PYTHON_BIN}" -m venv venv
-source venv/bin/activate
+
+if ! "${PYTHON_BIN}" -m venv venv; then
+    echo "=== ensurepip failed inside venv; retrying with --without-pip ==="
+    rm -rf venv
+    "${PYTHON_BIN}" -m venv --without-pip venv
+    source venv/bin/activate
+    curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+    python /tmp/get-pip.py
+    rm -f /tmp/get-pip.py
+else
+    source venv/bin/activate
+fi
+
 pip install --upgrade pip
 pip install -r requirements.txt
 
