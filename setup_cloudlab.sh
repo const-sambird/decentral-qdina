@@ -14,7 +14,7 @@ ROUTER_MODE=${8:-learned}  # Routing strategy: learned | static | heuristic
 
 export DEBIAN_FRONTEND=noninteractive
 
-# Force APT to use IPv4 globally AND retry failed downloads automatically
+# Force IPv4 + retries
 echo 'Acquire::ForceIPv4 "true";' | tee /etc/apt/apt.conf.d/99force-ipv4
 echo 'Acquire::Retries "5";'       | tee /etc/apt/apt.conf.d/99retries
 
@@ -26,73 +26,77 @@ pkill -9 -f apt-get 2>/dev/null || true
 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
 dpkg --configure -a 2>/dev/null || true
 
-# 2. Add deadsnakes PPA and install Python 3.12
+# 2. Install base system tools from the MAIN Ubuntu repos only (no PPA)
+#    These always work regardless of Launchpad's health.
 sed -i 's|us.archive.ubuntu.com|fr.archive.ubuntu.com|g' /etc/apt/sources.list
 apt-get update -qq
-apt-get install -y -qq software-properties-common ca-certificates dirmngr gnupg curl
+apt-get install -y -qq \
+    git tmux netcat-openbsd curl wget ca-certificates xz-utils \
+    build-essential gcc make psmisc \
+    libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
+    libncursesw5-dev tk-dev libffi-dev liblzma-dev
 
-# Download the key (with fallback to GitHub raw if the keyserver 503s)
-mkdir -p /etc/apt/keyrings
-if ! curl -fsSL https://keyserver.ubuntu.com/pks/lookup?op=get\&search=0xBA6932366A755776 | gpg --dearmor -o /etc/apt/keyrings/deadsnakes.gpg; then
-    echo "=== keyserver.ubuntu.com failed; trying GitHub raw key ==="
-    curl -fsSL https://raw.githubusercontent.com/deadsnakes/issues/master/deadsnakes.key | gpg --dearmor -o /etc/apt/keyrings/deadsnakes.gpg
-fi
+# 3. Install Python 3.12 via python-build-standalone (precompiled, no PPA needed)
+#    This is the SAME approach used by Astral (uv/ruff) and avoids deadsnakes entirely.
+PYTHON_VERSION="3.12.7"
+PYTHON_RELEASE="20241016"
+PYTHON_INSTALL_DIR="/opt/python3.12"
 
-echo "deb [signed-by=/etc/apt/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main" > /etc/apt/sources.list.d/deadsnakes-ubuntu-ppa-jammy.list
+if [ ! -x "${PYTHON_INSTALL_DIR}/bin/python3.12" ]; then
+    echo "=== Installing Python ${PYTHON_VERSION} from python-build-standalone ==="
+    ARCH=$(uname -m)   # x86_64 on CloudLab
+    TARBALL="cpython-${PYTHON_VERSION}+${PYTHON_RELEASE}-${ARCH}-unknown-linux-gnu-install_only_stripped.tar.gz"
 
-apt-get update -qq
+    URLS=(
+        "https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_RELEASE}/${TARBALL}"
+        "https://github.com/indygreg/python-build-standalone/releases/download/${PYTHON_RELEASE}/${TARBALL}"
+    )
 
-# Install base system tools first (these come from main Ubuntu repos, not deadsnakes,
-# so they always succeed regardless of the PPA's health)
-apt-get install -y -qq git tmux netcat-openbsd curl build-essential gcc make psmisc
+    DOWNLOADED=0
+    for url in "${URLS[@]}"; do
+        echo "Trying ${url}..."
+        if curl -fL --retry 5 --retry-delay 10 --connect-timeout 20 -o /tmp/python3.12.tar.gz "${url}"; then
+            DOWNLOADED=1
+            break
+        fi
+    done
 
-# Install Python 3.12 with retry loop (deadsnakes has transient 503s)
-DEADSNAKES_OK=0
-for attempt in 1 2 3 4 5; do
-    echo "=== Python 3.12 install attempt ${attempt}/5 ==="
-    if apt-get install -y -qq \
-        -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold" \
-        python3.12 python3.12-venv python3.12-dev; then
-        DEADSNAKES_OK=1
-        break
-    fi
-    echo "=== Attempt ${attempt} failed; cleaning apt cache and retrying in 20s ==="
-    apt-get clean || true
-    apt-get update -qq --fix-missing || true
-    sleep 20
-done
+    if [ "${DOWNLOADED}" -eq 1 ]; then
+        mkdir -p "${PYTHON_INSTALL_DIR}"
+        tar -xzf /tmp/python3.12.tar.gz -C "${PYTHON_INSTALL_DIR}" --strip-components=1
+        rm -f /tmp/python3.12.tar.gz
+        ln -sf "${PYTHON_INSTALL_DIR}/bin/python3.12" /usr/local/bin/python3.12
+        ln -sf "${PYTHON_INSTALL_DIR}/bin/pip3.12"    /usr/local/bin/pip3.12
+        PYTHON_BIN="/usr/local/bin/python3.12"
+    else
+        echo "=== All python-build-standalone mirrors failed; falling back to pyenv compilation ==="
+        export PYENV_ROOT="/root/.pyenv"
+        curl -fsSL https://pyenv.run | bash
+        export PATH="$PYENV_ROOT/bin:$PATH"
+        eval "$(pyenv init -)"
+        pyenv install -s "${PYTHON_VERSION}"
+        pyenv global "${PYTHON_VERSION}"
+        PYTHON_BIN="${PYENV_ROOT}/versions/${PYTHON_VERSION}/bin/python3.12"
 
-# Fallback: install Python 3.12 via pyenv (compiles from source, ~10 min)
-if [ "$DEADSNAKES_OK" -eq 0 ]; then
-    echo "=== deadsnakes PPA unreachable after 5 attempts; falling back to pyenv ==="
-    apt-get install -y -qq make build-essential libssl-dev zlib1g-dev \
-        libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm \
-        libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev
-
-    export PYENV_ROOT="/root/.pyenv"
-    curl -fsSL https://pyenv.run | bash
-    export PATH="$PYENV_ROOT/bin:$PATH"
-    eval "$(pyenv init -)"
-    pyenv install -s 3.12.7
-    pyenv global 3.12.7
-
-    # Persist for login shells and tmux sessions
-    cat > /etc/profile.d/pyenv.sh << 'EOF'
+        cat > /etc/profile.d/pyenv.sh << 'EOF'
 export PYENV_ROOT="/root/.pyenv"
 export PATH="$PYENV_ROOT/shims:$PYENV_ROOT/bin:$PATH"
 eval "$(pyenv init -)"
 EOF
-    chmod 644 /etc/profile.d/pyenv.sh
+        chmod 644 /etc/profile.d/pyenv.sh
+    fi
+else
+    echo "=== Python 3.12 already installed at ${PYTHON_INSTALL_DIR} ==="
+    PYTHON_BIN="${PYTHON_INSTALL_DIR}/bin/python3.12"
 fi
 
-# Sanity check: fail loudly now if Python 3.12 is not actually usable
-python3.12 --version
+# Sanity check: fail loudly if Python 3.12 is not usable
+"${PYTHON_BIN}" --version
 
-# 3. Setup Python virtual environment
+# 4. Setup Python virtual environment
 REPO_DIR="/decentral-qdina"
 cd "$REPO_DIR"
-python3.12 -m venv venv
+"${PYTHON_BIN}" -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
